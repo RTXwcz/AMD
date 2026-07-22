@@ -70,7 +70,7 @@ Run root tests, root race tests and vet, then run the unchanged nested
 - Create: `internal/platform/wsl/discovery.go`
 - Create: `internal/platform/wsl/discovery_test.go`
 
-- [ ] **Step 1: Write failing parser and policy tests**
+- [x] **Step 1: Write failing parser and policy tests**
 
 Define tests for UTF-16LE and UTF-8 `wsl --list --quiet` output, CR/NUL removal,
 exclusion of `docker-desktop` variants, zero/one/multiple user distributions,
@@ -93,7 +93,7 @@ func SelectableDistributions(items []platform.Distribution) []platform.Distribut
 func Decide(items []platform.Distribution) Selection
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -104,7 +104,7 @@ go test ./... -run 'TestDecodeConsoleOutput|TestParseDistributionNames|TestSelec
 
 Expected: build failure because the types/functions do not exist.
 
-- [ ] **Step 3: Implement the minimal decoder and inventory policy**
+- [x] **Step 3: Implement the minimal decoder and inventory policy**
 
 Decode BOM-marked or NUL-heavy UTF-16LE before testing UTF-8, without depending
 on localized labels. Reject odd UTF-16 byte counts, invalid surrogate pairs,
@@ -113,7 +113,7 @@ Preserve discovery order and remove only the exact system distributions.
 `Decide` returns provision-Ubuntu for zero choices, selects the only choice, and
 requires explicit user choice for two or more distributions.
 
-- [ ] **Step 4: Run focused and full tests**
+- [x] **Step 4: Run focused and full tests**
 
 Expected: focused tests and `go test ./...` pass.
 
