@@ -337,6 +337,27 @@ func TestProbeDistributionClassifiesSupportedAndUnsupportedFamilies(t *testing.T
 	}
 }
 
+func TestProbeDistributionAcceptsNonUTF8PreambleBeforeMachinePayload(t *testing.T) {
+	stdout := append([]byte{0xff, 0xfe, 0xfd}, encodeProbePayload([]string{
+		"uid=1000",
+		"user=alice",
+		"home=/home/alice",
+		"architecture=x86_64",
+		"os_id=ubuntu",
+		"os_id_like=debian",
+		"os_version_id=24.04",
+	})...)
+	run := &recordingRunner{result: platform.CommandResult{Stdout: stdout}}
+
+	got, err := wsl.ProbeDistribution(context.Background(), run, "Ubuntu")
+	if err != nil {
+		t.Fatalf("ProbeDistribution() error = %v", err)
+	}
+	if got.User != "alice" || got.Home != "/home/alice" || got.Family != platform.FamilyDebian {
+		t.Fatalf("ProbeDistribution() = %#v, want valid machine payload after ignored preamble", got)
+	}
+}
+
 func TestClassifyFamilyUsesIDAndIDLikeTokens(t *testing.T) {
 	tests := []struct {
 		id     string
@@ -367,6 +388,7 @@ func TestProbeDistributionRejectsRootDefaultUserWithActionableTypedError(t *test
 	}{
 		{name: "uid zero", uid: "0", user: "root", home: "/root"},
 		{name: "root home", uid: "1000", user: "alice", home: "/root"},
+		{name: "root home descendant", uid: "1000", user: "alice", home: "/root/runtime"},
 	}
 
 	for _, tt := range tests {
@@ -401,7 +423,13 @@ func TestValidateLinuxHomeRejectsUnsafeValues(t *testing.T) {
 		{name: "relative", home: "home/alice", uid: 1000},
 		{name: "newline", home: "/home/alice\nother", uid: 1000},
 		{name: "control character", home: "/home/alice\x1eother", uid: 1000},
+		{name: "filesystem root", home: "/", uid: 1000},
 		{name: "root home", home: "/root", uid: 1000},
+		{name: "root home descendant", home: "/root/runtime", uid: 1000},
+		{name: "dot component", home: "/home/./alice", uid: 1000},
+		{name: "dot-dot component", home: "/home/alice/../bob", uid: 1000},
+		{name: "repeated separator", home: "/home//alice", uid: 1000},
+		{name: "trailing separator", home: "/home/alice/", uid: 1000},
 		{name: "root uid", home: "/home/root", uid: 0},
 		{name: "negative uid", home: "/home/alice", uid: -1},
 	}
@@ -413,7 +441,7 @@ func TestValidateLinuxHomeRejectsUnsafeValues(t *testing.T) {
 			}
 		})
 	}
-	for _, home := range []string{"/home/alice", "/srv/users/alice", "/"} {
+	for _, home := range []string{"/home/alice", "/srv/users/alice"} {
 		if err := wsl.ValidateLinuxHome(home, 1000); err != nil {
 			t.Errorf("ValidateLinuxHome(%q, 1000) error = %v", home, err)
 		}
@@ -463,21 +491,67 @@ func TestProbeDistributionRejectsMalformedMachineFields(t *testing.T) {
 	}
 }
 
+func TestProbeDistributionRejectsMalformedProtocolFraming(t *testing.T) {
+	valid := []string{
+		"uid=1000",
+		"user=alice",
+		"home=/home/alice",
+		"architecture=x86_64",
+		"os_id=ubuntu",
+		"os_id_like=debian",
+		"os_version_id=24.04",
+	}
+	tests := []struct {
+		name   string
+		stdout []byte
+	}{
+		{name: "missing record separator", stdout: []byte(strings.Join(valid, "|"))},
+		{name: "invalid UTF-8 after record separator", stdout: []byte("preamble\x1euid=\xff")},
+		{name: "unknown field", stdout: append(encodeProbePayload(valid), []byte("\x1eunknown=value")...)},
+		{name: "record without equals", stdout: append(encodeProbePayload(valid), []byte("\x1emalformed")...)},
+		{name: "trailing record separator", stdout: append(encodeProbePayload(valid), 0x1e)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := &recordingRunner{result: platform.CommandResult{Stdout: tt.stdout}}
+			if got, err := wsl.ProbeDistribution(context.Background(), run, "Ubuntu"); err == nil {
+				t.Fatalf("ProbeDistribution() = %#v, want protocol error", got)
+			}
+		})
+	}
+}
+
 func TestProbeDistributionRequiresSuccessfulRunnerResult(t *testing.T) {
+	runnerErr := errors.New("runner unavailable")
 	tests := []struct {
 		name   string
 		result platform.CommandResult
 		err    error
 	}{
-		{name: "runner error", err: errors.New("runner unavailable")},
-		{name: "nonzero exit", result: platform.CommandResult{Code: 17, Stderr: []byte("localized failure")}},
+		{
+			name:   "runner error takes precedence",
+			result: platform.CommandResult{Code: 17, Stderr: []byte("private runner stderr")},
+			err:    runnerErr,
+		},
+		{
+			name:   "nonzero exit",
+			result: platform.CommandResult{Code: 17, Stderr: []byte("localized failure")},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			run := &recordingRunner{result: tt.result, err: tt.err}
-			if got, err := wsl.ProbeDistribution(context.Background(), run, "Ubuntu"); err == nil {
+			got, err := wsl.ProbeDistribution(context.Background(), run, "Ubuntu")
+			if err == nil {
 				t.Fatalf("ProbeDistribution() = %#v, want runner failure", got)
+			}
+			if tt.err != nil && !errors.Is(err, tt.err) {
+				t.Fatalf("ProbeDistribution() error = %v, want wrapped runner error %v", err, tt.err)
+			}
+			if strings.Contains(err.Error(), string(tt.result.Stderr)) {
+				t.Fatalf("ProbeDistribution() error leaked stderr %q: %v", tt.result.Stderr, err)
 			}
 		})
 	}
@@ -507,7 +581,11 @@ func machineProbeOutput(uid, user, home, architecture, id, idLike, version strin
 }
 
 func encodeProbeFields(fields []string) []byte {
-	return []byte("ignored WSL preamble\x1e" + strings.Join(fields, "\x1e"))
+	return append([]byte("ignored WSL preamble"), encodeProbePayload(fields)...)
+}
+
+func encodeProbePayload(fields []string) []byte {
+	return []byte("\x1e" + strings.Join(fields, "\x1e"))
 }
 
 func removeProbeField(fields []string, key string) []string {

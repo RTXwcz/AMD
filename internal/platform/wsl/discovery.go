@@ -118,7 +118,7 @@ func ProbeDistribution(ctx context.Context, run platform.CommandRunner, name str
 
 	user := fields["user"]
 	home := fields["home"]
-	if uid == 0 || user == "root" || path.Clean(home) == "/root" {
+	if uid == 0 || user == "root" || isRootHome(home) {
 		return platform.Distribution{}, &RootDefaultUserError{
 			Distribution: name,
 			UID:          uid,
@@ -173,24 +173,29 @@ func ValidateLinuxHome(home string, uid int) error {
 		return &LinuxHomeError{Home: home, UID: uid, Reason: "home contains a control character"}
 	case !path.IsAbs(home):
 		return &LinuxHomeError{Home: home, UID: uid, Reason: "home must be an absolute Linux path"}
-	case path.Clean(home) == "/root":
-		return &LinuxHomeError{Home: home, UID: uid, Reason: "root's home is not an allowed target"}
+	case path.Clean(home) != home:
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "home must be a canonical Linux path"}
+	case home == "/":
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "the filesystem root is not an allowed home"}
+	case isRootHome(home):
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "root's home tree is not an allowed target"}
 	default:
 		return nil
 	}
 }
 
 func parseProbeFields(raw []byte) (map[string]string, error) {
-	if !utf8.Valid(raw) {
-		return nil, fmt.Errorf("probe output is not valid UTF-8")
-	}
 	separator := bytes.IndexByte(raw, 0x1e)
 	if separator < 0 {
 		return nil, fmt.Errorf("probe output is missing its record separator")
 	}
+	payload := raw[separator+1:]
+	if !utf8.Valid(payload) {
+		return nil, fmt.Errorf("probe payload is not valid UTF-8")
+	}
 
 	fields := make(map[string]string, len(requiredProbeFields))
-	for _, record := range strings.Split(string(raw[separator+1:]), "\x1e") {
+	for _, record := range strings.Split(string(payload), "\x1e") {
 		key, value, ok := strings.Cut(record, "=")
 		if !ok || key == "" {
 			return nil, fmt.Errorf("probe output contains a malformed record")
@@ -249,6 +254,11 @@ func containsControl(value string) bool {
 		}
 	}
 	return false
+}
+
+func isRootHome(home string) bool {
+	clean := path.Clean(home)
+	return clean == "/root" || strings.HasPrefix(clean, "/root/")
 }
 
 // DecodeConsoleOutput decodes the encodings emitted by Windows console tools.

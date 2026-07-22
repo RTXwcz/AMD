@@ -37,14 +37,17 @@ type CommandRequest struct {
 	Stdin []byte
 }
 
-// CommandResult contains the observable result of a process invocation.
+// CommandResult contains the observable result of a process invocation. Code
+// is the exit code of a process that started and completed execution.
 type CommandResult struct {
 	Stdout []byte
 	Stderr []byte
 	Code   int
 }
 
-// CommandRunner executes an injected process request.
+// CommandRunner executes an injected process request. Run returns a non-nil
+// error only when the command did not complete; when both a result and error
+// are returned, callers must treat the error as authoritative.
 type CommandRunner interface {
 	Run(context.Context, CommandRequest) (CommandResult, error)
 }
