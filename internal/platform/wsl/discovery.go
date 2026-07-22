@@ -2,8 +2,11 @@ package wsl
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"path"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf16"
@@ -27,6 +30,225 @@ type Selection struct {
 	Kind         SelectionKind
 	Distribution platform.Distribution
 	Choices      []platform.Distribution
+}
+
+const distributionProbeScript = `if [ ! -r /etc/os-release ]; then
+  exit 65
+fi
+. /etc/os-release
+printf '\036uid=%s\036user=%s\036home=%s\036architecture=%s\036os_id=%s\036os_id_like=%s\036os_version_id=%s' \
+  "$(id -u)" "$(id -un)" "${HOME-}" "$(uname -m)" "${ID-}" "${ID_LIKE-}" "${VERSION_ID-}"`
+
+var requiredProbeFields = [...]string{
+	"uid",
+	"user",
+	"home",
+	"architecture",
+	"os_id",
+	"os_id_like",
+	"os_version_id",
+}
+
+// RootDefaultUserError reports a distribution whose configured default user
+// would make ez-am write application state as root.
+type RootDefaultUserError struct {
+	Distribution string
+	UID          int
+	User         string
+	Home         string
+	Action       string
+}
+
+func (err *RootDefaultUserError) Error() string {
+	return fmt.Sprintf(
+		"WSL distribution %q uses root as its default user (uid=%d, user=%q, home=%q); %s",
+		err.Distribution,
+		err.UID,
+		err.User,
+		err.Home,
+		err.Action,
+	)
+}
+
+// LinuxHomeError identifies a home path that is unsafe for user-owned runtime
+// data. Reason is stable enough for diagnostics; callers should not parse Error.
+type LinuxHomeError struct {
+	Home   string
+	UID    int
+	Reason string
+}
+
+func (err *LinuxHomeError) Error() string {
+	return fmt.Sprintf("invalid Linux home %q for uid %d: %s", err.Home, err.UID, err.Reason)
+}
+
+// ProbeDistribution discovers machine-readable metadata from the configured
+// default user of one WSL distribution.
+func ProbeDistribution(ctx context.Context, run platform.CommandRunner, name string) (platform.Distribution, error) {
+	if run == nil {
+		return platform.Distribution{}, fmt.Errorf("probe WSL distribution %q: command runner is nil", name)
+	}
+	if err := validateDistributionName(name); err != nil {
+		return platform.Distribution{}, err
+	}
+
+	result, err := run.Run(ctx, platform.CommandRequest{
+		Name: "wsl.exe",
+		Args: []string{"-d", name, "--", "sh", "-c", distributionProbeScript},
+	})
+	if err != nil {
+		return platform.Distribution{}, fmt.Errorf("probe WSL distribution %q: %w", name, err)
+	}
+	if result.Code != 0 {
+		return platform.Distribution{}, fmt.Errorf(
+			"probe WSL distribution %q exited with code %d; verify that the distribution starts and retry",
+			name,
+			result.Code,
+		)
+	}
+
+	fields, err := parseProbeFields(result.Stdout)
+	if err != nil {
+		return platform.Distribution{}, fmt.Errorf("parse probe result for WSL distribution %q: %w", name, err)
+	}
+	uid, err := parseProbeUID(fields["uid"])
+	if err != nil {
+		return platform.Distribution{}, fmt.Errorf("parse probe result for WSL distribution %q: %w", name, err)
+	}
+
+	user := fields["user"]
+	home := fields["home"]
+	if uid == 0 || user == "root" || path.Clean(home) == "/root" {
+		return platform.Distribution{}, &RootDefaultUserError{
+			Distribution: name,
+			UID:          uid,
+			User:         user,
+			Home:         home,
+			Action:       "configure a non-root default user for this distribution and retry",
+		}
+	}
+	if err := ValidateLinuxHome(home, uid); err != nil {
+		return platform.Distribution{}, fmt.Errorf("probe WSL distribution %q: %w", name, err)
+	}
+
+	idLike := strings.Fields(fields["os_id_like"])
+	return platform.Distribution{
+		Name:         name,
+		Family:       platform.Family(ClassifyFamily(fields["os_id"], idLike)),
+		Version:      fields["os_version_id"],
+		User:         user,
+		Home:         home,
+		Architecture: fields["architecture"],
+	}, nil
+}
+
+// ClassifyFamily maps os-release identity fields to the supported installer
+// families. An empty result means the distribution family is unsupported.
+func ClassifyFamily(id string, idLike []string) string {
+	identities := make([]string, 0, len(idLike)+1)
+	identities = append(identities, id)
+	identities = append(identities, idLike...)
+	for _, identity := range identities {
+		switch strings.ToLower(strings.TrimSpace(identity)) {
+		case "debian", "ubuntu":
+			return string(platform.FamilyDebian)
+		case "arch":
+			return string(platform.FamilyArch)
+		}
+	}
+	return string(platform.FamilyUnknown)
+}
+
+// ValidateLinuxHome rejects paths that cannot safely be used as a non-root
+// user's application-data base.
+func ValidateLinuxHome(home string, uid int) error {
+	switch {
+	case uid < 0:
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "uid must not be negative"}
+	case uid == 0:
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "root is not an allowed default user"}
+	case home == "":
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "home is missing"}
+	case containsControl(home):
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "home contains a control character"}
+	case !path.IsAbs(home):
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "home must be an absolute Linux path"}
+	case path.Clean(home) == "/root":
+		return &LinuxHomeError{Home: home, UID: uid, Reason: "root's home is not an allowed target"}
+	default:
+		return nil
+	}
+}
+
+func parseProbeFields(raw []byte) (map[string]string, error) {
+	if !utf8.Valid(raw) {
+		return nil, fmt.Errorf("probe output is not valid UTF-8")
+	}
+	separator := bytes.IndexByte(raw, 0x1e)
+	if separator < 0 {
+		return nil, fmt.Errorf("probe output is missing its record separator")
+	}
+
+	fields := make(map[string]string, len(requiredProbeFields))
+	for _, record := range strings.Split(string(raw[separator+1:]), "\x1e") {
+		key, value, ok := strings.Cut(record, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("probe output contains a malformed record")
+		}
+		if !isProbeField(key) {
+			return nil, fmt.Errorf("probe output contains unknown field %q", key)
+		}
+		if _, exists := fields[key]; exists {
+			return nil, fmt.Errorf("probe output contains duplicate field %q", key)
+		}
+		if containsControl(value) {
+			return nil, fmt.Errorf("probe field %q contains a control character", key)
+		}
+		fields[key] = value
+	}
+
+	for _, key := range requiredProbeFields {
+		if _, ok := fields[key]; !ok {
+			return nil, fmt.Errorf("probe output is missing field %q", key)
+		}
+	}
+	for _, key := range []string{"uid", "user", "home", "architecture", "os_id"} {
+		if fields[key] == "" {
+			return nil, fmt.Errorf("probe output field %q is empty", key)
+		}
+	}
+	return fields, nil
+}
+
+func isProbeField(key string) bool {
+	for _, expected := range requiredProbeFields {
+		if key == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func parseProbeUID(value string) (int, error) {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return 0, fmt.Errorf("probe field %q is not a decimal uid", "uid")
+		}
+	}
+	uid, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("probe field %q is not a valid uid: %w", "uid", err)
+	}
+	return uid, nil
+}
+
+func containsControl(value string) bool {
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			return true
+		}
+	}
+	return false
 }
 
 // DecodeConsoleOutput decodes the encodings emitted by Windows console tools.
@@ -183,6 +405,9 @@ func decodeUTF16(raw []byte, order binary.ByteOrder) (string, error) {
 }
 
 func validateDistributionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("invalid WSL distribution name: name is empty")
+	}
 	for _, char := range name {
 		if char == 0 || char == '/' || char == '\\' || unicode.IsControl(char) {
 			return fmt.Errorf("invalid WSL distribution name %q: contains a prohibited character", name)
