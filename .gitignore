@@ -8,6 +8,7 @@ wrapper-data/
 DEPLOY_LOG.md
 .agents/
 .reference/
+.worktrees/
 
 # Downloaded media
 downloads/
