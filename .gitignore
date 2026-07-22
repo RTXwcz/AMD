@@ -1,0 +1,27 @@
+# Credentials & local config (NEVER commit)
+.env
+config/config.yaml
+wrapper-data/
+*.token
+*.bak.*
+.backups/
+DEPLOY_LOG.md
+.agents/
+.reference/
+
+# Downloaded media
+downloads/
+
+# Wrapper prebuilt binary / build artifacts
+wrapper-bin/
+*.zip
+
+# Go build output
+deploy/deploy
+downloader/downloader
+*.exe
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
