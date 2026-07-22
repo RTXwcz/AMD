@@ -26,14 +26,14 @@
 - Create: `internal/media/feature_test.go`
 - Create: `internal/media/model_test.go`
 
-- [ ] **Step 1: Create the root module and copy tests first**
+- [x] **Step 1: Create the root module and copy tests first**
 
 Use module name `ez-am`, retain the current Bubble Tea dependency versions, and
 copy the four downloader test files into `internal/media` with package name
 `media`. Change only the relative shell fixture path from `../dl.sh` to
 `../../dl.sh`.
 
-- [ ] **Step 2: Run root tests and verify RED**
+- [x] **Step 2: Run root tests and verify RED**
 
 Run:
 
@@ -45,7 +45,7 @@ go test ./...
 Expected: build failure because the media production types and functions have
 not been copied yet.
 
-- [ ] **Step 3: Copy the tested media implementation**
+- [x] **Step 3: Copy the tested media implementation**
 
 Copy the four production files into `internal/media`, change only the package
 name, rename `main.go` to `model.go`, and move process startup into:
@@ -55,9 +55,10 @@ func Run() int
 ```
 
 The only `os.Exit` call belongs in `cmd/ez-am/main.go`. Preserve the existing
-runID/jobIndex stale-event checks and the complete two-phase cancellation path.
+`tea.NewProgram(initialModel())` behavior, runID/jobIndex stale-event checks,
+and the complete two-phase cancellation path.
 
-- [ ] **Step 4: Verify old and new media implementations**
+- [x] **Step 4: Verify old and new media implementations**
 
 Run root tests, root race tests and vet, then run the unchanged nested
 `downloader` tests, race tests and vet. Cross-build `cmd/ez-am` for Windows.
@@ -86,9 +87,10 @@ type Distribution struct {
     LegacyBase bool
 }
 
-func DecodeConsoleOutput(raw []byte) string
-func ParseDistributionNames(raw []byte) []string
-func SelectableDistributions(items []Distribution) []Distribution
+func DecodeConsoleOutput(raw []byte) (string, error)
+func ParseDistributionNames(raw []byte) ([]platform.Distribution, error)
+func SelectableDistributions(items []platform.Distribution) []platform.Distribution
+func Decide(items []platform.Distribution) Selection
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -104,9 +106,12 @@ Expected: build failure because the types/functions do not exist.
 
 - [ ] **Step 3: Implement the minimal decoder and inventory policy**
 
-Decode BOM-marked or NUL-heavy UTF-16LE without depending on localized labels.
-Reject empty/control-character names. Preserve discovery order and remove only
-the exact system distributions.
+Decode BOM-marked or NUL-heavy UTF-16LE before testing UTF-8, without depending
+on localized labels. Reject odd UTF-16 byte counts, invalid surrogate pairs,
+empty/control-character names, path separators, and case-insensitive duplicates.
+Preserve discovery order and remove only the exact system distributions.
+`Decide` returns provision-Ubuntu for zero choices, selects the only choice, and
+requires explicit user choice for two or more distributions.
 
 - [ ] **Step 4: Run focused and full tests**
 
