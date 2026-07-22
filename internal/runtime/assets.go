@@ -64,25 +64,25 @@ var embeddedRuntimeAssets = [...]embeddedAsset{
 	{
 		name:   "setup.sh",
 		mode:   0o755,
-		digest: "fd908aee0eaed20e05ba04cf5c4cb6623912c2e62c99ebd1e6f326631e9d56ce",
+		digest: "b4a0045410f466af2d27bea6289a8d4213e4a755d4048d89fae9e77d6467ed3b",
 		data:   embeddedSetup,
 	},
 	{
 		name:   "login.sh",
 		mode:   0o755,
-		digest: "a2a0cc6ec2a2dbb7620edd4ad80e3085d72d8db86c7a15320e02149edfab5628",
+		digest: "325aac0eead1e840efcf8d0ceedc0e4344205785612cfb3c1f76907841e08813",
 		data:   embeddedLogin,
 	},
 	{
 		name:   "dl.sh",
 		mode:   0o755,
-		digest: "87ff095a50d8fc19e1532bec47b845fc49517e51957d18bebbb6f9f440a5e068",
+		digest: "6170c3251d3060df45bb3b9cdf5a5495d3cb3d6c09e7fa0806f1a0ebcb89d8e3",
 		data:   embeddedDownloader,
 	},
 	{
 		name:   "compose.yaml",
 		mode:   0o644,
-		digest: "5b5e0bbe41bbbd139933f4aadfa3decb07a55b8b58fe6e6528327375895cc276",
+		digest: "0d890e3f433305908021e9463ac3f96c8134813eed6b74d0e8e368933c28ec53",
 		data:   embeddedCompose,
 	},
 }
@@ -94,10 +94,38 @@ version_dir=$1
 asset_name=$2
 asset_mode=$3
 asset_sha256=$4
-mkdir -p -- "$version_dir"
+runtime_root=${version_dir%/versions/*}
+[ "$runtime_root" != "$version_dir" ] || exit 64
+versions_dir="$runtime_root/versions"
+
+secure_dir() {
+  directory=$1
+  [ ! -L "$directory" ] || exit 70
+  if [ ! -e "$directory" ]; then
+    mkdir -p -- "$directory"
+  fi
+  [ -d "$directory" ] && [ ! -L "$directory" ] || exit 70
+  [ "$(stat -c '%u' -- "$directory")" = "$(id -u)" ] || exit 71
+  mode=$((0$(stat -c '%a' -- "$directory")))
+  [ $((mode & 18)) -eq 0 ] || exit 72
+}
+
+base_dir=${runtime_root%/runtime}
+[ "$base_dir" != "$runtime_root" ] || exit 64
+secure_dir "$base_dir"
+secure_dir "$runtime_root"
+secure_dir "$versions_dir"
+secure_dir "$version_dir"
 target="$version_dir/$asset_name"
 temporary=$(mktemp "$version_dir/.${asset_name}.part.XXXXXX")
-trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+cleanup() { rm -f -- "$temporary"; }
+interrupted() {
+  case "$1" in HUP) exit 129 ;; INT) exit 130 ;; TERM) exit 143 ;; esac
+}
+trap cleanup EXIT
+trap 'interrupted HUP' HUP
+trap 'interrupted INT' INT
+trap 'interrupted TERM' TERM
 cat >"$temporary"
 printf '%s  %s\n' "$asset_sha256" "$temporary" | sha256sum -c - >/dev/null
 chmod "$asset_mode" "$temporary"
@@ -109,6 +137,21 @@ const activateRuntimeScript = `set -eu
 runtime_root=$1
 version_dir=$2
 shift 2
+secure_dir() {
+  directory=$1
+  [ ! -L "$directory" ] || exit 70
+  [ -d "$directory" ] && [ ! -L "$directory" ] || exit 70
+  [ "$(stat -c '%u' -- "$directory")" = "$(id -u)" ] || exit 71
+  mode=$((0$(stat -c '%a' -- "$directory")))
+  [ $((mode & 18)) -eq 0 ] || exit 72
+}
+base_dir=${runtime_root%/runtime}
+[ "$base_dir" != "$runtime_root" ] || exit 64
+versions_dir="$runtime_root/versions"
+secure_dir "$base_dir"
+secure_dir "$runtime_root"
+secure_dir "$versions_dir"
+secure_dir "$version_dir"
 while [ "$#" -gt 0 ]; do
   asset_name=$1
   asset_mode=$2
@@ -119,10 +162,16 @@ while [ "$#" -gt 0 ]; do
   printf '%s  %s\n' "$asset_sha256" "$target" | sha256sum -c - >/dev/null
   [ "$(stat -c '%a' -- "$target")" = "${asset_mode#0}" ] || exit 66
 done
-mkdir -p -- "$runtime_root"
 temporary=$(mktemp "$runtime_root/.current.part.XXXXXX")
 rm -f -- "$temporary"
-trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+cleanup() { rm -f -- "$temporary"; }
+interrupted() {
+  case "$1" in HUP) exit 129 ;; INT) exit 130 ;; TERM) exit 143 ;; esac
+}
+trap cleanup EXIT
+trap 'interrupted HUP' HUP
+trap 'interrupted INT' INT
+trap 'interrupted TERM' TERM
 ln -s -- "$version_dir" "$temporary"
 mv -Tf -- "$temporary" "$runtime_root/current"
 trap - EXIT HUP INT TERM`

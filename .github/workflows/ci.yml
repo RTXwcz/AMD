@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: bash tests/shell_regression_test.sh
+      - run: bash tests/dl_args_test.sh

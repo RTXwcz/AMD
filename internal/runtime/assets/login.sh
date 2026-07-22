@@ -4,10 +4,12 @@
 set -euo pipefail
 umask 077
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 AMD_BASE="${AMD_BASE:-$HOME/amd}"
-ENV_FILE="$AMD_BASE/.env"
-DATA_DIR="$AMD_BASE/wrapper-data"
-CONFIG_FILE="$AMD_BASE/config/config.yaml"
+CONFIG_DIR="${EZ_AM_CONFIG_DIR:-$AMD_BASE/config}"
+DATA_DIR="${EZ_AM_STATE_DIR:-$AMD_BASE/wrapper-data}"
+ENV_FILE="$CONFIG_DIR/.env"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SESSION_DB="$DATA_DIR/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb"
 WRAPPER_IMAGE="${WRAPPER_IMAGE:-local/wrapper:latest}"
 LOGIN_CONTAINER="amd-wrapper-login"
@@ -26,15 +28,22 @@ cleanup_owned_auth() {
 }
 
 handle_auth_signal() {
+  local signal="$1"
   trap - EXIT INT TERM HUP
   cleanup_owned_auth || true
-  exit 130
+  case "$signal" in
+    HUP) exit 129 ;;
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+  esac
 }
 
 arm_auth_cleanup() {
   AUTH_OWNED=true
   trap cleanup_owned_auth EXIT
-  trap handle_auth_signal INT TERM HUP
+  trap 'handle_auth_signal HUP' HUP
+  trap 'handle_auth_signal INT' INT
+  trap 'handle_auth_signal TERM' TERM
 }
 
 disarm_auth_cleanup() {
@@ -134,15 +143,15 @@ wait_for_ports() {
 
 status_impl() {
   if ! session_db_valid; then
-    echo "[!] Persisted wrapper session is missing or empty. Run: bash \"$AMD_BASE/login.sh\" interactive" >&2
+    echo "[!] Persisted wrapper session is missing or empty. Run: bash \"$SCRIPT_DIR/login.sh\" interactive" >&2
     return 1
   fi
   if ! container_exists "$LOGIN_CONTAINER"; then
-    echo "[!] $LOGIN_CONTAINER does not exist. Run: bash \"$AMD_BASE/login.sh\" interactive" >&2
+    echo "[!] $LOGIN_CONTAINER does not exist. Run: bash \"$SCRIPT_DIR/login.sh\" interactive" >&2
     return 1
   fi
   if ! container_running "$LOGIN_CONTAINER"; then
-    echo "[!] $LOGIN_CONTAINER is not running. Run: bash \"$AMD_BASE/login.sh\" start" >&2
+    echo "[!] $LOGIN_CONTAINER is not running. Run: bash \"$SCRIPT_DIR/login.sh\" start" >&2
     return 1
   fi
   if ! wrapper_ports_ready "$LOGIN_CONTAINER"; then
@@ -336,7 +345,7 @@ submit_code() {
 
   require_docker || return 1
   if ! container_running "$AUTH_CONTAINER"; then
-    echo "[!] No active authentication request. Run: bash \"$AMD_BASE/login.sh\" start" >&2
+    echo "[!] No active authentication request. Run: bash \"$SCRIPT_DIR/login.sh\" start" >&2
     return 1
   fi
 

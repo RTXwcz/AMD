@@ -23,10 +23,10 @@ var expectedRuntimeAssets = []struct {
 	mode   fs.FileMode
 	digest string
 }{
-	{name: "setup.sh", mode: 0o755, digest: "fd908aee0eaed20e05ba04cf5c4cb6623912c2e62c99ebd1e6f326631e9d56ce"},
-	{name: "login.sh", mode: 0o755, digest: "a2a0cc6ec2a2dbb7620edd4ad80e3085d72d8db86c7a15320e02149edfab5628"},
-	{name: "dl.sh", mode: 0o755, digest: "87ff095a50d8fc19e1532bec47b845fc49517e51957d18bebbb6f9f440a5e068"},
-	{name: "compose.yaml", mode: 0o644, digest: "5b5e0bbe41bbbd139933f4aadfa3decb07a55b8b58fe6e6528327375895cc276"},
+	{name: "setup.sh", mode: 0o755, digest: "b4a0045410f466af2d27bea6289a8d4213e4a755d4048d89fae9e77d6467ed3b"},
+	{name: "login.sh", mode: 0o755, digest: "325aac0eead1e840efcf8d0ceedc0e4344205785612cfb3c1f76907841e08813"},
+	{name: "dl.sh", mode: 0o755, digest: "6170c3251d3060df45bb3b9cdf5a5495d3cb3d6c09e7fa0806f1a0ebcb89d8e3"},
+	{name: "compose.yaml", mode: 0o644, digest: "0d890e3f433305908021e9463ac3f96c8134813eed6b74d0e8e368933c28ec53"},
 }
 
 func TestEmbeddedRuntimeReturnsAuthoritativeAssetsWithoutFilesystemLookup(t *testing.T) {
@@ -448,6 +448,37 @@ func TestInstallRequestShellWritesAtomicallyAndActivatesOnlyCompleteVersion(t *t
 		if err != nil || !bytes.Equal(installed, asset.Data) {
 			t.Fatalf("active asset %s = %q, error=%v", asset.Name, installed, err)
 		}
+	}
+}
+
+func TestInstallRequestShellRejectsSymlinkedRuntimeParents(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("generated POSIX shell is exercised by the required WSL test run")
+	}
+	assets := mustEmbeddedRuntime(t)
+	base := filepath.Join(t.TempDir(), "ez-am")
+	requests, err := runtime.BuildInstallRequests("Ubuntu", validLayout(filepath.ToSlash(base)), assets)
+	if err != nil {
+		t.Fatalf("BuildInstallRequests() error = %v", err)
+	}
+
+	outside := t.TempDir()
+	runtimeRoot := filepath.Join(base, "runtime")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatalf("create base: %v", err)
+	}
+	if err := os.Symlink(outside, runtimeRoot); err != nil {
+		t.Fatalf("symlink runtime parent: %v", err)
+	}
+	if output, err := runGeneratedShell(requests[0]); err == nil {
+		t.Fatalf("install accepted symlinked runtime parent: %s", output)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("install wrote through symlinked runtime parent: %v", entries)
 	}
 }
 

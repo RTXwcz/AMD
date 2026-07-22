@@ -15,14 +15,12 @@ not_contains() {
   if grep -Fq -- "$pattern" "$file"; then fail "$name"; else pass "$name"; fi
 }
 
-contains "$ROOT/setup.sh" 'install_runtime_file "dl.sh"' "setup installs canonical dl.sh"
-contains "$ROOT/setup.sh" 'install_runtime_file "login.sh"' "setup installs canonical login.sh"
-not_contains "$ROOT/setup.sh" 'cat > "$BASE/dl.sh"' "setup does not embed a second dl.sh"
+not_contains "$ROOT/setup.sh" 'install_runtime_file' "setup does not create unversioned runtime copies"
+contains "$ROOT/setup.sh" 'SCRIPT_DIR/login.sh' "setup points users to the active runtime version"
 contains "$ROOT/setup.sh" 'exit-on-error: true' "setup enables real downloader failures"
 contains "$ROOT/setup.sh" 'AMD_BASE' "setup supports an explicit runtime base"
 contains "$ROOT/setup.sh" 'umask 077' "setup uses a private creation mask"
 contains "$ROOT/setup.sh" 'SCRIPT_DIR=' "setup derives its canonical source directory"
-contains "$ROOT/setup.sh" 'install_runtime_file "compose.yaml"' "setup installs canonical compose.yaml"
 contains "$ROOT/setup.sh" 'backup_existing' "setup backs up existing secret configuration"
 contains "$ROOT/setup.sh" 'chmod 700 "$CFG_DIR"' "setup protects the config directory"
 contains "$ROOT/setup.sh" 'chmod 600 "$ENV_FILE" "$CFG_FILE"' "setup protects secret files"
@@ -31,7 +29,14 @@ not_contains "$ROOT/setup.sh" 'sudo ' "setup never asks for sudo"
 not_contains "$ROOT/setup.sh" 'apt-get upgrade' "setup never upgrades the distro"
 not_contains "$ROOT/setup.sh" 'powershell.exe' "setup does not generate Windows launchers"
 not_contains "$ROOT/setup.sh" 'docker rm -f amd-wrapper-login' "setup does not own the login lifecycle"
+contains "$ROOT/setup.sh" 'EZ_AM_CONFIG_DIR' "setup consumes the explicit config directory"
+contains "$ROOT/setup.sh" 'EZ_AM_CACHE_DIR' "setup consumes the explicit cache directory"
+contains "$ROOT/setup.sh" 'EZ_AM_STATE_DIR' "setup consumes the explicit state directory"
+contains "$ROOT/setup.sh" 'EZ_AM_DOWNLOADS_DIR' "setup consumes the explicit downloads directory"
+contains "$ROOT/setup.sh" 'ENV_FILE="$CFG_DIR/.env"' "setup stores explicit-layout credentials with config"
 contains "$ROOT/dl.sh" 'login.sh status' "download checks wrapper status through login.sh"
+contains "$ROOT/dl.sh" 'EZ_AM_CONFIG_DIR' "download consumes the explicit config directory"
+contains "$ROOT/dl.sh" 'EZ_AM_DOWNLOADS_DIR' "download consumes the explicit downloads directory"
 not_contains "$ROOT/dl.sh" 'docker run -d --name amd-wrapper-login' "download never creates an unlogged wrapper"
 contains "$ROOT/dl.sh" 'download_args=(' "download builds Docker arguments as an array"
 contains "$ROOT/dl.sh" 'docker "${download_args[@]}"' "download preserves Docker argument boundaries"
@@ -53,10 +58,16 @@ contains "$ROOT/login.sh" '--restart unless-stopped' "login configures the long-
 contains "$ROOT/login.sh" 'start_long_lived' "login can rebuild a runtime from cached session data"
 contains "$ROOT/login.sh" 'require_docker || return 1' "login does not rely on inherited errexit"
 contains "$ROOT/login.sh" 'load_credentials || return 1' "login stops after missing credentials"
-contains "$ROOT/login.sh" 'trap handle_auth_signal INT TERM HUP' "login cleans owned authentication on signals"
+contains "$ROOT/login.sh" "trap 'handle_auth_signal HUP' HUP" "login maps HUP to a standard exit code"
+contains "$ROOT/login.sh" "trap 'handle_auth_signal INT' INT" "login maps INT to a standard exit code"
+contains "$ROOT/login.sh" "trap 'handle_auth_signal TERM' TERM" "login maps TERM to a standard exit code"
+contains "$ROOT/login.sh" 'EZ_AM_CONFIG_DIR' "login consumes the explicit config directory"
+contains "$ROOT/login.sh" 'EZ_AM_STATE_DIR' "login consumes the explicit state directory"
+contains "$ROOT/login.sh" 'ENV_FILE="$CONFIG_DIR/.env"' "login reads explicit-layout credentials with config"
 contains "$ROOT/compose.yaml" 'container_name: amd-wrapper-login' "compose uses the canonical container name"
-contains "$ROOT/compose.yaml" './config/config.yaml' "compose mounts the real config path"
 contains "$ROOT/compose.yaml" './wrapper-data' "compose preserves wrapper session data"
+contains "$ROOT/compose.yaml" '${EZ_AM_CONFIG_DIR:-./config}' "compose consumes the explicit config directory"
+contains "$ROOT/compose.yaml" '${EZ_AM_STATE_DIR:-./wrapper-data}' "compose consumes the explicit state directory"
 contains "$ROOT/compose.yaml" 'privileged: true' "compose retains upstream privileged mode"
 contains "$ROOT/compose.yaml" '127.0.0.1:10020:10020' "compose binds port 10020 to loopback"
 contains "$ROOT/compose.yaml" '127.0.0.1:20020:20020' "compose binds port 20020 to loopback"
@@ -161,7 +172,7 @@ if password.encode() in transcript or token.encode() in transcript:
     raise SystemExit(1)
 if b"media-user-token: \r\nstorefront" not in transcript and b"media-user-token: \nstorefront" not in transcript:
     raise SystemExit(1)
-if "APPLE_ID_PASS=" + password not in (runtime / ".env").read_text():
+if "APPLE_ID_PASS=" + password not in (runtime / "config/.env").read_text():
     raise SystemExit(1)
 if 'media-user-token: "' + token + '"' not in (runtime / "config/config.yaml").read_text():
     raise SystemExit(1)
@@ -188,12 +199,56 @@ setup_rc=$?
 if (( setup_rc == 0 )) &&
    [[ "$setup_output" != *"noninteractive-password-sentinel"* ]] &&
    [[ "$setup_output" != *"noninteractive-token-sentinel"* ]] &&
-   grep -Fq 'APPLE_ID_PASS= noninteractive-password-sentinel ' "$NONINTERACTIVE_BASE/.env" &&
+   grep -Fq 'APPLE_ID_PASS= noninteractive-password-sentinel ' "$NONINTERACTIVE_BASE/config/.env" &&
    grep -Fq 'media-user-token: " noninteractive-token-sentinel "' "$NONINTERACTIVE_BASE/config/config.yaml"
 then
   pass "setup preserves noninteractive secrets without logging them"
 else
   fail "setup preserves noninteractive secrets without logging them"
+fi
+
+MIGRATION_BASE="$SANDBOX/setup-home/amd-migration"
+mkdir -p "$MIGRATION_BASE"
+printf 'APPLE_ID_USER=legacy@example.invalid\nAPPLE_ID_PASS=legacy-password-sentinel\n' > "$MIGRATION_BASE/.env"
+chmod 600 "$MIGRATION_BASE/.env"
+migration_output="$(
+  HOME="$SANDBOX/setup-home" AMD_BASE="$MIGRATION_BASE" \
+    PATH="$SANDBOX/setup-bin:$PATH" \
+    WRAPPER_IMAGE="local/test-wrapper:latest" \
+    DOWNLOADER_IMAGE="example.invalid/downloader:test" \
+    EZ_USER="new@example.invalid" EZ_PASS="new-password" \
+    EZ_TOKEN="migration-token" EZ_STOREFRONT="us" \
+    bash "$ROOT/setup.sh" </dev/null 2>&1
+)"
+if [[ "$migration_output" == *"Migrated legacy credentials"* ]] &&
+   [ ! -e "$MIGRATION_BASE/.env" ] &&
+   grep -Fq 'APPLE_ID_PASS=legacy-password-sentinel' "$MIGRATION_BASE/config/.env.bak."*
+then
+  pass "setup migrates legacy credentials before replacing them"
+else
+  fail "setup migrates legacy credentials before replacing them"
+fi
+
+XDG_BASE="$SANDBOX/setup-home/xdg-data/ez-am"
+XDG_CONFIG="$SANDBOX/setup-home/xdg-config/ez-am"
+XDG_CACHE="$SANDBOX/setup-home/xdg-cache/ez-am"
+XDG_STATE="$SANDBOX/setup-home/xdg-state/ez-am"
+XDG_DOWNLOADS="$SANDBOX/setup-home/xdg-downloads"
+if HOME="$SANDBOX/setup-home" AMD_BASE="$XDG_BASE" \
+  EZ_AM_CONFIG_DIR="$XDG_CONFIG" EZ_AM_CACHE_DIR="$XDG_CACHE" \
+  EZ_AM_STATE_DIR="$XDG_STATE" EZ_AM_DOWNLOADS_DIR="$XDG_DOWNLOADS" \
+  PATH="$SANDBOX/setup-bin:$PATH" \
+  WRAPPER_IMAGE="local/test-wrapper:latest" DOWNLOADER_IMAGE="example.invalid/downloader:test" \
+  EZ_USER="layout@example.invalid" EZ_PASS="layout-password" \
+  EZ_TOKEN="layout-token" EZ_STOREFRONT="us" \
+  bash "$ROOT/setup.sh" </dev/null >/dev/null 2>&1 &&
+  [ -f "$XDG_CONFIG/.env" ] && [ -f "$XDG_CONFIG/config.yaml" ] &&
+  [ -d "$XDG_CACHE" ] && [ -d "$XDG_STATE" ] && [ -d "$XDG_DOWNLOADS" ] &&
+  [ ! -e "$XDG_BASE/dl.sh" ] && [ ! -e "$XDG_BASE/login.sh" ]
+then
+  pass "setup creates each explicit layout directory without base entry copies"
+else
+  fail "setup creates each explicit layout directory without base entry copies"
 fi
 
 cat > "$SANDBOX/bin/docker" <<'EOF'
@@ -220,15 +275,16 @@ do
   fi
 done
 
-mkdir -p "$SANDBOX/runtime/config" "$SANDBOX/runtime/downloads"
+mkdir -p "$SANDBOX/runtime/current" "$SANDBOX/runtime/config" "$SANDBOX/runtime/downloads"
 : > "$SANDBOX/runtime/config/config.yaml"
 mkdir -p "$SANDBOX/runtime/wrapper-data/data/com.apple.android.music/files/mpl_db"
 dd if=/dev/zero of="$SANDBOX/runtime/wrapper-data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb" bs=4096 count=1 status=none
-cat > "$SANDBOX/runtime/login.sh" <<'EOF'
+cp "$ROOT/dl.sh" "$SANDBOX/runtime/current/dl.sh"
+cat > "$SANDBOX/runtime/current/login.sh" <<'EOF'
 #!/usr/bin/env bash
 [ "${1:-}" = status ]
 EOF
-chmod +x "$SANDBOX/runtime/login.sh"
+chmod +x "$SANDBOX/runtime/current/dl.sh" "$SANDBOX/runtime/current/login.sh"
 cat > "$SANDBOX/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -241,7 +297,7 @@ chmod +x "$SANDBOX/bin/docker"
 
 output=""
 output="$(AMD_BASE="$SANDBOX/runtime" PATH="$SANDBOX/bin:$PATH" \
-  bash "$ROOT/dl.sh" 'https://music.apple.com/us/album/example/1' alac 2>&1)"
+  bash "$SANDBOX/runtime/current/dl.sh" 'https://music.apple.com/us/album/example/1' alac 2>&1)"
 rc=$?
 if (( rc == 42 )); then
   pass "download propagates the Docker exit code"
@@ -272,36 +328,42 @@ esac
 EOF
 chmod +x "$SANDBOX/bin/docker"
 
-rm -f "$SANDBOX/signal-started" "$SANDBOX/signal-run-log" "$SANDBOX/signal-rm-log"
-AMD_BASE="$SANDBOX/runtime" PATH="$SANDBOX/bin:$PATH" \
-  EZ_DOWNLOAD_CONTAINER="amd-downloader-signal-test" \
-  SIGNAL_STARTED="$SANDBOX/signal-started" \
-  SIGNAL_RUN_LOG="$SANDBOX/signal-run-log" \
-  SIGNAL_RM_LOG="$SANDBOX/signal-rm-log" \
-  setsid bash "$ROOT/dl.sh" 'https://music.apple.com/us/album/example/1' alac \
-  >/dev/null 2>&1 &
-signal_pid=$!
-for _ in $(seq 1 100); do
-  [ -e "$SANDBOX/signal-started" ] && break
-  sleep 0.05
+for signal_spec in 'HUP 129' 'TERM 143'; do
+  set -- $signal_spec
+  signal_name=$1
+  expected_rc=$2
+  signal_dir="$SANDBOX/signal-$signal_name"
+  mkdir -p "$signal_dir"
+  AMD_BASE="$SANDBOX/runtime" PATH="$SANDBOX/bin:$PATH" \
+    EZ_DOWNLOAD_CONTAINER="amd-downloader-signal-test" \
+    SIGNAL_STARTED="$signal_dir/started" \
+    SIGNAL_RUN_LOG="$signal_dir/run-log" \
+    SIGNAL_RM_LOG="$signal_dir/rm-log" \
+    setsid bash "$SANDBOX/runtime/current/dl.sh" 'https://music.apple.com/us/album/example/1' alac \
+    >/dev/null 2>&1 &
+  signal_pid=$!
+  for _ in $(seq 1 100); do
+    [ -e "$signal_dir/started" ] && break
+    sleep 0.05
+  done
+  if [ -e "$signal_dir/started" ]; then
+    kill -"$signal_name" -- "-$signal_pid" 2>/dev/null || true
+  fi
+  wait "$signal_pid" 2>/dev/null
+  signal_rc=$?
+  if kill -0 "$signal_pid" 2>/dev/null; then
+    kill -KILL -- "-$signal_pid" 2>/dev/null || true
+    wait "$signal_pid" 2>/dev/null || true
+  fi
+  if (( signal_rc == expected_rc )) &&
+     grep -Fq -- '--name amd-downloader-signal-test' "$signal_dir/run-log" 2>/dev/null &&
+     grep -Fq -- 'rm -f amd-downloader-signal-test' "$signal_dir/rm-log" 2>/dev/null
+  then
+    pass "download $signal_name removes its named container and exits $expected_rc"
+  else
+    fail "download $signal_name removes its named container and exits $expected_rc"
+  fi
 done
-if [ -e "$SANDBOX/signal-started" ]; then
-  kill -TERM -- "-$signal_pid" 2>/dev/null || true
-fi
-wait "$signal_pid" 2>/dev/null
-signal_rc=$?
-if kill -0 "$signal_pid" 2>/dev/null; then
-  kill -KILL -- "-$signal_pid" 2>/dev/null || true
-  wait "$signal_pid" 2>/dev/null || true
-fi
-if (( signal_rc != 0 )) &&
-   grep -Fq -- '--name amd-downloader-signal-test' "$SANDBOX/signal-run-log" 2>/dev/null &&
-   grep -Fq -- 'rm -f amd-downloader-signal-test' "$SANDBOX/signal-rm-log" 2>/dev/null
-then
-  pass "download signal removes its named container"
-else
-  fail "download signal removes its named container"
-fi
 
 cat > "$SANDBOX/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -395,11 +457,11 @@ else
   pass "login status rejects stale logs and a missing live port"
 fi
 
-cat > "$SANDBOX/runtime/.env" <<'EOF'
+cat > "$SANDBOX/runtime/config/.env" <<'EOF'
 APPLE_ID_USER=test@example.invalid
 APPLE_ID_PASS=test-password
 EOF
-chmod 600 "$SANDBOX/runtime/.env"
+chmod 600 "$SANDBOX/runtime/config/.env"
 cat > "$SANDBOX/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -470,7 +532,7 @@ fi
 
 rm -f "$SANDBOX/runtime/wrapper-data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb"
 dd if=/dev/zero of="$SANDBOX/runtime/wrapper-data/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb" bs=4096 count=1 status=none
-mv "$SANDBOX/runtime/.env" "$SANDBOX/runtime/.env.saved"
+mv "$SANDBOX/runtime/config/.env" "$SANDBOX/runtime/config/.env.saved"
 rm -f "$SANDBOX/login-state" "$SANDBOX/auth-state" "$SANDBOX/docker-run-args"
 if AMD_BASE="$SANDBOX/runtime" TCP_TABLE="$SANDBOX/tcp-healthy" \
   LOGIN_STATE="$SANDBOX/login-state" AUTH_STATE="$SANDBOX/auth-state" \
@@ -483,7 +545,7 @@ elif [ -e "$SANDBOX/docker-run-args" ]; then
 else
   pass "interactive login stops before auth when credentials are missing"
 fi
-mv "$SANDBOX/runtime/.env.saved" "$SANDBOX/runtime/.env"
+mv "$SANDBOX/runtime/config/.env.saved" "$SANDBOX/runtime/config/.env"
 
 : > "$SANDBOX/auth-state"
 rm -f "$SANDBOX/login-state" "$SANDBOX/docker-run-args" "$SANDBOX/docker-rm-log"
