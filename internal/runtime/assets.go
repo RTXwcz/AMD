@@ -185,8 +185,12 @@ func ResolveRuntimeLayout(home string, xdg XDGDirs, legacyValid bool) RuntimeLay
 func EmbeddedRuntime() ([]RuntimeAsset, error) {
 	assets := make([]RuntimeAsset, 0, len(embeddedRuntimeAssets))
 	for _, embedded := range embeddedRuntimeAssets {
+		expectedDigest, err := parseEmbeddedDigest(embedded)
+		if err != nil {
+			return nil, err
+		}
 		digest := sha256.Sum256(embedded.data)
-		if hex.EncodeToString(digest[:]) != embedded.digest {
+		if digest != expectedDigest {
 			return nil, fmt.Errorf("embedded runtime asset %q failed SHA-256 verification", embedded.name)
 		}
 		assets = append(assets, RuntimeAsset{
@@ -257,12 +261,19 @@ func validateAndOrderAssets(assets []RuntimeAsset) ([]RuntimeAsset, error) {
 		if _, duplicate := byName[asset.Name]; duplicate {
 			return nil, fmt.Errorf("runtime manifest contains duplicate asset %q", asset.Name)
 		}
-		expectedMode, ok := expectedMode(asset.Name)
+		expected, ok := expectedAsset(asset.Name)
 		if !ok {
 			return nil, fmt.Errorf("runtime manifest contains unknown asset %q", asset.Name)
 		}
-		if asset.Mode != expectedMode {
-			return nil, fmt.Errorf("runtime asset %q has mode %v, want %04o", asset.Name, asset.Mode, expectedMode)
+		if asset.Mode != expected.mode {
+			return nil, fmt.Errorf("runtime asset %q has mode %v, want %04o", asset.Name, asset.Mode, expected.mode)
+		}
+		expectedDigest, err := parseEmbeddedDigest(expected)
+		if err != nil {
+			return nil, err
+		}
+		if asset.SHA256 != expectedDigest {
+			return nil, fmt.Errorf("runtime asset %q does not match the embedded manifest SHA-256", asset.Name)
 		}
 		digest := sha256.Sum256(asset.Data)
 		if digest != asset.SHA256 {
@@ -283,13 +294,13 @@ func validateAndOrderAssets(assets []RuntimeAsset) ([]RuntimeAsset, error) {
 	return ordered, nil
 }
 
-func expectedMode(name string) (fs.FileMode, bool) {
+func expectedAsset(name string) (embeddedAsset, bool) {
 	for _, expected := range embeddedRuntimeAssets {
 		if name == expected.name {
-			return expected.mode, true
+			return expected, true
 		}
 	}
-	return 0, false
+	return embeddedAsset{}, false
 }
 
 func validateAssetName(name string) error {
@@ -301,10 +312,20 @@ func validateAssetName(name string) error {
 			return fmt.Errorf("runtime asset name %q contains a prohibited character", name)
 		}
 	}
-	if _, ok := expectedMode(name); !ok {
+	if _, ok := expectedAsset(name); !ok {
 		return fmt.Errorf("runtime manifest contains unknown asset %q", name)
 	}
 	return nil
+}
+
+func parseEmbeddedDigest(asset embeddedAsset) ([sha256.Size]byte, error) {
+	raw, err := hex.DecodeString(asset.digest)
+	if err != nil || len(raw) != sha256.Size {
+		return [sha256.Size]byte{}, fmt.Errorf("embedded runtime asset %q has an invalid manifest SHA-256", asset.name)
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], raw)
+	return digest, nil
 }
 
 func aggregateManifestDigest(assets []RuntimeAsset) [sha256.Size]byte {

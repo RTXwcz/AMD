@@ -229,8 +229,6 @@ func TestBuildInstallRequestsUsesFixedScriptsSeparateArgumentsAndStdin(t *testin
 		Cache: "/opt/cache/ez-am", State: "/opt/state/ez-am", Downloads: "/opt/other/ez-am/downloads",
 	}
 	otherAssets := mustEmbeddedRuntime(t)
-	otherAssets[0].Data = []byte("malicious data; $(touch should-not-run)\n")
-	otherAssets[0].SHA256 = sha256.Sum256(otherAssets[0].Data)
 	other, err := runtime.BuildInstallRequests("Other $(distro)", otherLayout, otherAssets)
 	if err != nil {
 		t.Fatalf("BuildInstallRequests(other values) error = %v", err)
@@ -251,7 +249,7 @@ func TestBuildInstallRequestsUsesFixedScriptsSeparateArgumentsAndStdin(t *testin
 	}
 }
 
-func TestBuildInstallRequestsCanonicalizesAssetOrderAndVersionsByManifest(t *testing.T) {
+func TestBuildInstallRequestsCanonicalizesAssetOrder(t *testing.T) {
 	assets := mustEmbeddedRuntime(t)
 	shuffled := []runtime.RuntimeAsset{assets[3], assets[1], assets[0], assets[2]}
 	layout := validLayout("/home/alice/.local/share/ez-am")
@@ -265,17 +263,22 @@ func TestBuildInstallRequestsCanonicalizesAssetOrderAndVersionsByManifest(t *tes
 			t.Errorf("request[%d] asset = %q, want canonical order %q", i, requests[i].Args[8], want.name)
 		}
 	}
-	firstVersion := requests[0].Args[7]
-
-	changed := mustEmbeddedRuntime(t)
-	changed[0].Data = append(append([]byte(nil), changed[0].Data...), '\n')
-	changed[0].SHA256 = sha256.Sum256(changed[0].Data)
-	requests, err = runtime.BuildInstallRequests("Ubuntu", layout, changed)
-	if err != nil {
-		t.Fatalf("BuildInstallRequests(changed digest) error = %v", err)
+	if len(strings.TrimPrefix(requests[0].Args[7], layout.Base+"/runtime/versions/")) != sha256.Size*2 {
+		t.Fatalf("version directory %q does not end in an aggregate SHA-256", requests[0].Args[7])
 	}
-	if requests[0].Args[7] == firstVersion {
-		t.Fatalf("version directory did not change when the manifest digest changed")
+}
+
+func TestBuildInstallRequestsRejectsCallerSelfSignedAssetContent(t *testing.T) {
+	assets := mustEmbeddedRuntime(t)
+	assets[0].Data = append(append([]byte(nil), assets[0].Data...), '\n')
+	assets[0].SHA256 = sha256.Sum256(assets[0].Data)
+
+	requests, err := runtime.BuildInstallRequests("Ubuntu", validLayout("/home/alice/.local/share/ez-am"), assets)
+	if err == nil {
+		t.Fatalf("BuildInstallRequests() accepted caller-self-signed runtime content")
+	}
+	if len(requests) != 0 {
+		t.Fatalf("BuildInstallRequests() returned %d partial requests with error %v", len(requests), err)
 	}
 }
 
