@@ -129,6 +129,13 @@ The executable does not locate `setup.sh` beside itself. Compatibility scripts
 are embedded with `go:embed`, extracted to a versioned application-owned
 directory, verified after writing, and atomically activated.
 
+The wrapper archive and third-party native libraries are not embedded in the
+public executable unless their redistribution licenses have been verified.
+Until then the executable is the only file the user downloads manually, and it
+bootstraps the official wrapper asset at runtime using a content-locked
+manifest. A locally observed archive hash is not treated as authenticated
+upstream identity without an independent release/asset record.
+
 Every network asset is described by a versioned manifest containing URL,
 architecture, size, and SHA-256. Container images are pinned by digest. A mirror
 may replace the transport URL but never the expected hash or signature. Partial
