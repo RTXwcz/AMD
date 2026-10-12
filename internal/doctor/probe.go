@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"ez-am/internal/i18n"
 	"ez-am/internal/platform"
 	"ez-am/internal/platform/wsl"
 )
@@ -152,7 +153,7 @@ func probeFacts(ctx context.Context, in Inputs, distro, explicitBase string) (fa
 		return facts{}, err
 	}
 	if result.Code != 0 {
-		return facts{}, fmt.Errorf("the distribution probe exited with code %d: %s", result.Code, firstLine(string(result.Stderr)))
+		return facts{}, fmt.Errorf("%s", i18n.Tf("doctor.probe.exit", result.Code, firstLine(string(result.Stderr))))
 	}
 	return parseFacts(result.Stdout)
 }
@@ -252,73 +253,73 @@ func rows(f facts) []Check {
 }
 
 func distributionRow(f facts) Check {
-	const id, title = "distro", "Distribution"
+	id, title := "distro", i18n.T("doctor.distro.title")
 	if f.uid == 0 || f.user == "root" || wsl.ValidateLinuxHome(f.home, f.uid) != nil {
 		return Check{
 			ID: id, Title: title, Status: StatusFail,
-			Detail: "the default user of this distribution is root; configure a normal user first",
+			Detail: i18n.T("doctor.distro.root_user"),
 		}
 	}
 	family := wsl.ClassifyFamily(f.osID, strings.Fields(f.osIDLike))
 	if family == "" {
 		return Check{
 			ID: id, Title: title, Status: StatusFail,
-			Detail: fmt.Sprintf("unsupported distribution family %q; supported: Debian/Ubuntu and Arch", sanitize(f.osID)),
+			Detail: i18n.Tf("doctor.distro.unsupported", sanitize(f.osID)),
 		}
 	}
 	return Check{
 		ID: id, Title: title, Status: StatusOK,
-		Detail: fmt.Sprintf("%s %s (%s) · %s", sanitize(f.osID), sanitize(f.osVersion), family, sanitize(f.architecture)),
+		Detail: i18n.Tf("doctor.distro.ok", sanitize(f.osID), sanitize(f.osVersion), family, sanitize(f.architecture)),
 	}
 }
 
 func dockerRow(f facts) Check {
-	const id, title = "docker", "Docker"
+	id, title := "docker", i18n.T("doctor.docker.title")
 	if f.docker == "" {
 		detail := firstLine(f.dockerError)
 		if detail == "" {
-			detail = "the Docker daemon does not answer inside this distribution"
+			detail = i18n.T("doctor.docker.unavailable")
 		}
 		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionStartDocker, Detail: detail}
 	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "server " + sanitize(f.docker)}
+	return Check{ID: id, Title: title, Status: StatusOK, Detail: i18n.Tf("doctor.docker.server", sanitize(f.docker))}
 }
 
 func buildxRow(f facts) Check {
-	const id, title = "buildx", "BuildKit"
+	id, title := "buildx", i18n.T("doctor.buildx.title")
 	if f.buildx == "" {
 		return Check{
 			ID: id, Title: title, Status: StatusWarn, Action: ActionInstallBuildx,
-			Detail: "docker buildx is missing; needed once to build the wrapper image",
+			Detail: i18n.T("doctor.buildx.missing"),
 		}
 	}
 	return Check{ID: id, Title: title, Status: StatusOK, Detail: firstLine(f.buildx)}
 }
 
 func runtimeRow(f facts) Check {
-	const id, title = "runtime", "Runtime files"
+	id, title := "runtime", i18n.T("doctor.runtime.title")
 	if f.missing != "" {
 		return Check{
 			ID: id, Title: title, Status: StatusFail, Action: ActionInstallRuntime,
-			Detail: "missing under " + f.base + ": " + sanitize(f.missing),
+			Detail: i18n.Tf("doctor.runtime.missing", f.base, sanitize(f.missing)),
 		}
 	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "installed under " + f.base}
+	return Check{ID: id, Title: title, Status: StatusOK, Detail: i18n.Tf("doctor.runtime.ok", f.base)}
 }
 
 func configRow(f facts) Check {
-	const id, title = "config", "Credentials"
+	id, title := "config", i18n.T("doctor.config.title")
 	if !f.hasCred {
 		return Check{
 			ID: id, Title: title, Status: StatusFail, Action: ActionCollectCreds,
-			Detail: "the Apple account and media token are not configured yet",
+			Detail: i18n.T("doctor.config.missing"),
 		}
 	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "account and media token are stored"}
+	return Check{ID: id, Title: title, Status: StatusOK, Detail: i18n.T("doctor.config.ok")}
 }
 
 func imagesRow(f facts) Check {
-	const id, title = "images", "Images"
+	id, title := "images", i18n.T("doctor.images.title")
 	var missing []string
 	if !hasRepository(f.images, "ghcr.io/zhaarey/apple-music-downloader") {
 		missing = append(missing, "downloader")
@@ -329,10 +330,10 @@ func imagesRow(f facts) Check {
 	if len(missing) > 0 {
 		return Check{
 			ID: id, Title: title, Status: StatusWarn,
-			Detail: "not pulled yet: " + strings.Join(missing, ", ") + " (setup.sh fetches them)",
+			Detail: i18n.Tf("doctor.images.missing", strings.Join(missing, ", ")),
 		}
 	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "downloader and wrapper images are present"}
+	return Check{ID: id, Title: title, Status: StatusOK, Detail: i18n.T("doctor.images.ok")}
 }
 
 func hasRepository(images []string, repository string) bool {
@@ -345,27 +346,27 @@ func hasRepository(images []string, repository string) bool {
 }
 
 func wrapperRow(f facts) Check {
-	const id, title = "wrapper", "Wrapper session"
+	id, title := "wrapper", i18n.T("doctor.wrapper.title")
 	if f.wrapperOK {
-		return Check{ID: id, Title: title, Status: StatusOK, Detail: "listening on 10020/20020/30020"}
+		return Check{ID: id, Title: title, Status: StatusOK, Detail: i18n.T("doctor.wrapper.ok")}
 	}
 	detail := firstLine(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(f.wrapperDetail), "[!]")))
 	if strings.Contains(detail, "amd-wrapper-auth") || strings.Contains(detail, "Authentication started") {
 		return Check{
 			ID: id, Title: title, Status: StatusFail, Action: ActionLogin,
-			Detail: "an authentication request is already waiting for a code",
+			Detail: i18n.T("doctor.wrapper.pending"),
 		}
 	}
 	if detail == "" {
-		detail = "the wrapper is not healthy"
+		detail = i18n.T("doctor.wrapper.unhealthy")
 	}
 	return Check{ID: id, Title: title, Status: StatusFail, Action: ActionLogin, Detail: detail}
 }
 
 func downloadsRow(f facts) Check {
-	const id, title = "downloads", "Output directory"
+	id, title := "downloads", i18n.T("doctor.downloads.title")
 	if !f.downloadsOK {
-		return Check{ID: id, Title: title, Status: StatusWarn, Detail: "not writable yet: " + f.base + "/downloads"}
+		return Check{ID: id, Title: title, Status: StatusWarn, Detail: i18n.Tf("doctor.downloads.unwritable", f.base+"/downloads")}
 	}
 	return Check{ID: id, Title: title, Status: StatusOK, Detail: f.base + "/downloads"}
 }

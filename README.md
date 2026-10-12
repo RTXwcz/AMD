@@ -25,6 +25,7 @@ apply. This project does not bypass Apple account security.
 | `internal/doctor` | Read-only diagnosis: WSL, distribution, Docker, BuildKit, runtime files, credentials, images, wrapper session, output directory. |
 | `internal/control` | The supervisor TUI: runs the doctor, offers the fixes it can perform, re-checks, then hands over to the media engine. |
 | `internal/media` | Apple Music URL/catalog parsing, track and quality selection, grouped download jobs, cancellation. |
+| `internal/i18n` | The English and Chinese message catalog, locale detection and the saved choice. |
 | `internal/platform`, `internal/runtime` | WSL discovery and probing, embedded runtime assets and their install plan. |
 | `setup.sh`, `login.sh`, `dl.sh`, `compose.yaml` | The shell engine the app drives; also usable directly. |
 | `tests/` | Shell regression suite and media verification helpers. |
@@ -39,6 +40,20 @@ apply. This project does not bypass Apple account security.
    The app reports it as a warning and tells you how to install it.
 4. An active Apple Music subscription and a `media-user-token`.
 5. Network access to `github.com` and `ghcr.io` during installation.
+
+**On a completely fresh machine the app cannot do everything for you.** It
+detects a missing WSL, distribution, Docker or BuildKit, and for each of those
+it prints the exact command to run and offers a re-check action — but installing
+WSL2 needs administrator rights and a reboot, so that step stays in your hands:
+
+```powershell
+wsl --install -d Ubuntu                 # elevated PowerShell, then reboot
+wsl -d Ubuntu --exec sudo apt-get install -y docker.io
+                                        # or install Docker Desktop with WSL integration
+```
+
+Everything after that is handled inside the app: runtime files, the Apple
+account and media token, the image build, 2FA, and the wrapper session.
 
 ## Quick start (Windows)
 
@@ -89,7 +104,24 @@ ez-am doctor --json    # machine-readable report
 ez-am download         # skip the checks and go straight to the downloader
 
 ez-am --distro Ubuntu --base /home/you/amd    # explicit target
+ez-am --lang en                               # English interface
 ```
+
+## Language
+
+The interface ships in English and Simplified Chinese and follows the system
+locale by default (a zh-CN Windows starts in Chinese). Switch it three ways:
+
+| How | Scope |
+| --- | --- |
+| `--lang zh` / `--lang en` | this run, and remembered for the next one |
+| `EZ_AM_LANG` environment variable | this run |
+| `L` key in the app | immediately, in every screen except the text fields |
+
+The saved choice lives in `%AppData%\ez-am\settings.json` (0600); the flag wins
+over the environment, which wins over the saved value, which wins over the
+system locale. The choice made in the app carries into the downloader, so the
+whole session stays in one language.
 
 The shell engine remains available on its own:
 

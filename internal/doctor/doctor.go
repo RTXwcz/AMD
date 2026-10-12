@@ -15,6 +15,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
+	"ez-am/internal/i18n"
 	"ez-am/internal/platform"
 	"ez-am/internal/platform/wsl"
 )
@@ -53,6 +56,7 @@ const (
 	ActionChooseDistro   = "choose-distro"
 	ActionStartDocker    = "start-docker"
 	ActionInstallBuildx  = "install-buildx"
+	ActionInstallWSL     = "install-wsl"
 )
 
 // Check is one user-visible diagnosis row.
@@ -137,7 +141,7 @@ func diagnose(ctx context.Context, in Inputs) Report {
 	if in.Runner == nil {
 		return Report{Code: UnsupportedPlatform, Checks: []Check{{
 			ID: "wsl", Title: "WSL", Status: StatusFail,
-			Detail: "no command runner was provided", Action: "",
+			Detail: i18n.T("doctor.no_runner"), Action: "",
 		}}}
 	}
 
@@ -154,7 +158,7 @@ func diagnose(ctx context.Context, in Inputs) Report {
 	if probeErr != nil {
 		report.add(Check{
 			ID: "distro", Title: "Distribution", Status: StatusFail,
-			Detail: "the distribution probe failed: " + sanitize(probeErr.Error()),
+			Detail: i18n.Tf("doctor.probe.failed", sanitize(probeErr.Error())),
 		})
 		return report
 	}
@@ -217,8 +221,8 @@ func checkWSL(ctx context.Context, in Inputs) Check {
 	result, err := in.Runner.Run(ctx, platform.CommandRequest{Name: "wsl.exe", Args: []string{"--status"}})
 	if err != nil {
 		return Check{
-			ID: "wsl", Title: "WSL", Status: StatusFail,
-			Detail: "wsl.exe is not available on this machine: " + sanitize(err.Error()),
+			ID: "wsl", Title: i18n.T("doctor.wsl.title"), Status: StatusFail, Action: ActionInstallWSL,
+			Detail: i18n.Tf("doctor.wsl.unavailable", sanitize(err.Error())),
 		}
 	}
 	// `wsl --status` answers in UTF-16 on Windows, so the raw bytes are noise
@@ -232,7 +236,7 @@ func checkWSL(ctx context.Context, in Inputs) Check {
 		detail = summarizeWSLStatus(decoded)
 	}
 	if detail == "" {
-		detail = "wsl.exe is available"
+		detail = i18n.T("doctor.wsl.available")
 	}
 	return Check{ID: "wsl", Title: "WSL", Status: StatusOK, Detail: detail}
 }
@@ -320,26 +324,37 @@ var checkOrder = []string{"wsl", "distro", "docker", "buildx", "runtime", "confi
 // Text renders a plain, ANSI-free report for terminals and logs.
 func (r Report) Text() string {
 	var builder strings.Builder
-	builder.WriteString("ez-am doctor\n")
+	builder.WriteString(i18n.T("doctor.header") + "\n")
 	for _, wanted := range checkOrder {
 		for _, check := range r.Checks {
 			if check.ID != wanted {
 				continue
 			}
-			builder.WriteString(fmt.Sprintf("%s %-16s %s\n", marker(check.Status), check.Title, check.Detail))
+			builder.WriteString(fmt.Sprintf("%s %s %s\n", marker(check.Status), padTitle(check.Title), check.Detail))
 		}
 	}
-	builder.WriteString("\nResult: " + string(r.Code))
+	builder.WriteString("\n" + i18n.Tf("doctor.result", string(r.Code)))
 	if r.Ready() {
-		builder.WriteString(" — ready to download")
+		builder.WriteString(i18n.T("doctor.result.ready"))
 	}
 	builder.WriteString("\n")
 	if !r.Ready() {
 		if actions := r.Actions(); len(actions) > 0 {
-			builder.WriteString("Suggested actions: " + strings.Join(actions, ", ") + "\n")
+			builder.WriteString(i18n.Tf("doctor.result.suggested", strings.Join(actions, ", ")) + "\n")
 		}
 	}
 	return builder.String()
+}
+
+// padTitle pads a row title to a fixed display width. Chinese titles are made
+// of double-width characters, so counting runes (as %-16s does) would leave the
+// detail column ragged in the Chinese report.
+func padTitle(title string) string {
+	const width = 16
+	if current := lipgloss.Width(title); current < width {
+		return title + strings.Repeat(" ", width-current)
+	}
+	return title
 }
 
 func marker(status Status) string {

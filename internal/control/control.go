@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"ez-am/internal/doctor"
+	"ez-am/internal/i18n"
 	"ez-am/internal/platform"
 	"ez-am/internal/platform/wsl"
 	"ez-am/internal/runtime"
@@ -40,7 +41,7 @@ type Result struct {
 // ready (LaunchMedia) or the user quit.
 func Run(ctx context.Context, opts Options) (Result, error) {
 	if opts.Runner == nil {
-		return Result{}, fmt.Errorf("control: a command runner is required")
+		return Result{}, fmt.Errorf("%s", i18n.T("control.err.runner"))
 	}
 	if opts.ReadyPause == 0 {
 		opts.ReadyPause = 900 * time.Millisecond
@@ -235,7 +236,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case distroListMsg:
 		m.busy = false
 		if msg.err != nil {
-			m.log = "could not list distributions: " + msg.err.Error()
+			m.log = i18n.Tf("control.err.distro_list", msg.err.Error())
 			return m, nil
 		}
 		m.choices = msg.names
@@ -263,6 +264,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clearSecrets()
 		m.quitting = true
 		return m, tea.Quit
+	}
+	// "L" switches the interface language wherever the keyboard is not being
+	// used as a text field, and remembers the choice for the next run.
+	if msg.String() == "L" && m.phase != phaseCreds && m.phase != phaseLogin {
+		i18n.Toggle()
+		_ = i18n.Save(i18n.Current())
+		return m, nil
 	}
 	switch m.phase {
 	case phaseChecking:
@@ -422,7 +430,7 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 	case actionInstallRuntime:
 		m.busy = true
 		m.phase = phaseRunning
-		m.log = "installing the bundled runtime…"
+		m.log = i18n.T("control.log.installing")
 		home := m.report.Distribution.Home
 		legacy := m.report.Distribution.LegacyBase
 		explicit := m.opts.Base
@@ -440,17 +448,17 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 				return actionDoneMsg{err: err}
 			}
 			var log strings.Builder
-			fmt.Fprintf(&log, "runtime base: %s\n", layout.Base)
+			fmt.Fprintf(&log, i18n.T("control.log.runtime_base")+"\n", layout.Base)
 			for _, request := range requests {
 				execResult, runErr := runner.Run(ctx, request)
 				if runErr != nil {
 					return actionDoneMsg{log: log.String(), err: runErr}
 				}
 				if execResult.Code != 0 {
-					return actionDoneMsg{log: log.String(), err: fmt.Errorf("install step %q exited with code %d: %s", request.Args[len(request.Args)-1], execResult.Code, firstLine(string(execResult.Stderr)))}
+					return actionDoneMsg{log: log.String(), err: fmt.Errorf("%s", i18n.Tf("control.err.install_step", request.Args[len(request.Args)-1], execResult.Code, firstLine(string(execResult.Stderr))))}
 				}
 			}
-			log.WriteString("runtime files installed and verified.")
+			log.WriteString(i18n.T("control.log.runtime_installed"))
 			return actionDoneMsg{log: log.String()}
 		}
 	case actionCollectCreds:
@@ -461,7 +469,7 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 	case actionLogin:
 		m.busy = true
 		m.phase = phaseRunning
-		m.log = "starting the Apple authentication request…"
+		m.log = i18n.T("control.log.starting_auth")
 		return m, func() tea.Msg {
 			result, err := runner.Run(ctx, platform.CommandRequest{
 				Name: "wsl.exe",
@@ -472,9 +480,9 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 			}
 			output := strings.TrimSpace(string(result.Stdout) + "\n" + string(result.Stderr))
 			if result.Code != 0 {
-				return actionDoneMsg{log: output, err: fmt.Errorf("login.sh start exited with code %d", result.Code)}
+				return actionDoneMsg{log: output, err: fmt.Errorf("%s", i18n.Tf("control.err.login_start", result.Code))}
 			}
-			return actionDoneMsg{log: output + "\n\nEnter the 6-digit code Apple sent you."}
+			return actionDoneMsg{log: i18n.Tf("control.log.auth_waiting", output)}
 		}
 	case actionInstruction:
 		m.phase = phaseRunning
@@ -486,7 +494,7 @@ func (m model) runAction() (tea.Model, tea.Cmd) {
 
 func resolveLayout(home string, legacy bool, explicitBase string) (runtime.RuntimeLayout, error) {
 	if strings.TrimSpace(home) == "" {
-		return runtime.RuntimeLayout{}, fmt.Errorf("the distribution home directory is unknown")
+		return runtime.RuntimeLayout{}, fmt.Errorf("%s", i18n.T("control.err.layout_home"))
 	}
 	layout := runtime.ResolveRuntimeLayout(home, runtime.XDGDirs{}, legacy)
 	if base := strings.TrimSpace(explicitBase); base != "" {
@@ -509,14 +517,14 @@ func (m model) startSetup() (tea.Model, tea.Cmd) {
 		creds.storefront = "us"
 	}
 	if creds.user == "" || creds.password == "" || creds.token == "" {
-		m.log = "Apple ID, password and media-user-token are all required."
+		m.log = i18n.T("control.creds.required")
 		return m, nil
 	}
 	distro, base := m.opts.Distro, m.opts.Base
 	runner, ctx := m.opts.Runner, m.ctx
 	m.busy = true
 	m.phase = phaseRunning
-	m.log = "writing configuration and preparing images (this can take minutes)…"
+	m.log = i18n.T("control.log.deploying")
 	return m, func() tea.Msg {
 		env := []string{
 			"EZ_USER=" + creds.user,
@@ -535,7 +543,7 @@ func (m model) startSetup() (tea.Model, tea.Cmd) {
 			return actionDoneMsg{log: output, err: err}
 		}
 		if result.Code != 0 {
-			return actionDoneMsg{log: output, err: fmt.Errorf("setup.sh exited with code %d", result.Code)}
+			return actionDoneMsg{log: output, err: fmt.Errorf("%s", i18n.Tf("control.err.setup", result.Code))}
 		}
 		return actionDoneMsg{log: output}
 	}
@@ -544,7 +552,7 @@ func (m model) startSetup() (tea.Model, tea.Cmd) {
 func (m model) submitCode() (tea.Model, tea.Cmd) {
 	code := strings.TrimSpace(m.inputs[0].Value())
 	if !isSixDigits(code) {
-		m.log = "the code must be exactly six digits."
+		m.log = i18n.T("control.login.invalid")
 		return m, nil
 	}
 	m.inputs[0].SetValue("")
@@ -552,7 +560,7 @@ func (m model) submitCode() (tea.Model, tea.Cmd) {
 	runner, ctx := m.opts.Runner, m.ctx
 	m.busy = true
 	m.phase = phaseRunning
-	m.log = "submitting the code and waiting for the wrapper to become healthy…"
+	m.log = i18n.T("control.log.submitting")
 	return m, func() tea.Msg {
 		result, err := runner.Run(ctx, platform.CommandRequest{
 			Name: "wsl.exe",
@@ -563,7 +571,7 @@ func (m model) submitCode() (tea.Model, tea.Cmd) {
 			return actionDoneMsg{log: output, err: err}
 		}
 		if result.Code != 0 {
-			return actionDoneMsg{log: output, err: fmt.Errorf("login.sh submit exited with code %d", result.Code)}
+			return actionDoneMsg{log: output, err: fmt.Errorf("%s", i18n.Tf("control.err.submit", result.Code))}
 		}
 		return actionDoneMsg{log: output}
 	}
@@ -581,29 +589,35 @@ func actionsFor(report doctor.Report) []action {
 		seen[check.Action] = true
 		switch check.Action {
 		case doctor.ActionInstallRuntime:
-			actions = append(actions, action{kind: actionInstallRuntime, title: "Install the bundled runtime files", detail: check.Detail})
+			actions = append(actions, action{kind: actionInstallRuntime, title: i18n.T("control.action.install_runtime"), detail: check.Detail})
 		case doctor.ActionCollectCreds:
-			actions = append(actions, action{kind: actionCollectCreds, title: "Enter Apple ID, media-user-token and deploy", detail: check.Detail})
+			actions = append(actions, action{kind: actionCollectCreds, title: i18n.T("control.action.collect_creds"), detail: check.Detail})
 		case doctor.ActionLogin:
-			actions = append(actions, action{kind: actionLogin, title: "Log in to Apple (2FA)", detail: check.Detail})
+			actions = append(actions, action{kind: actionLogin, title: i18n.T("control.action.login"), detail: check.Detail})
 		case doctor.ActionChooseDistro:
-			actions = append(actions, action{kind: actionChooseDistro, title: "Choose a WSL distribution", detail: check.Detail})
+			actions = append(actions, action{kind: actionChooseDistro, title: i18n.T("control.action.choose_distro"), detail: check.Detail})
 		case doctor.ActionStartDocker:
 			actions = append(actions, action{
 				kind:   actionInstruction,
-				title:  "Start Docker, then re-check",
-				detail: "Start Docker Desktop, or run `sudo service docker start` inside the distribution, then press R to re-run the doctor.",
+				title:  i18n.T("control.action.start_docker"),
+				detail: i18n.T("control.action.start_docker_detail"),
 			})
 		case doctor.ActionInstallBuildx:
 			actions = append(actions, action{
 				kind:   actionInstruction,
-				title:  "Install the docker buildx plugin, then re-check",
-				detail: "Install the docker-buildx package, or download the docker-buildx binary into ~/.docker/cli-plugins/. Only needed once, to build the wrapper image.",
+				title:  i18n.T("control.action.install_buildx"),
+				detail: i18n.T("control.action.install_buildx_detail"),
+			})
+		case doctor.ActionInstallWSL:
+			actions = append(actions, action{
+				kind:   actionInstruction,
+				title:  i18n.T("control.action.wsl_missing"),
+				detail: i18n.T("control.action.wsl_missing_detail"),
 			})
 		}
 	}
-	actions = append(actions, action{kind: actionRerun, title: "Re-run the doctor"})
-	actions = append(actions, action{kind: actionQuit, title: "Quit"})
+	actions = append(actions, action{kind: actionRerun, title: i18n.T("control.action.rerun")})
+	actions = append(actions, action{kind: actionQuit, title: i18n.T("control.action.quit")})
 	return actions
 }
 
@@ -647,34 +661,34 @@ func (m model) View() string {
 	var builder strings.Builder
 	builder.WriteString(titleStyle.Render("ez-am"))
 	if m.opts.Distro != "" {
-		builder.WriteString(hintStyle.Render("  distribution: " + m.opts.Distro))
+		builder.WriteString(hintStyle.Render(i18n.Tf("control.distro_label", m.opts.Distro)))
 	}
 	builder.WriteString("\n\n")
 
 	switch m.phase {
 	case phaseChecking:
 		builder.WriteString(panelStyle.Render(
-			labelStyle.Render("Environment check") + "\n\n" +
-				hintStyle.Render(spinnerFrames[m.spin%len(spinnerFrames)]+" probing WSL, Docker, runtime files, credentials, images and the wrapper session…") + "\n\n" +
-				hintStyle.Render("q quits"),
+			labelStyle.Render(i18n.T("control.checking.title")) + "\n\n" +
+				hintStyle.Render(spinnerFrames[m.spin%len(spinnerFrames)]+" "+i18n.T("control.checking.detail")) + "\n\n" +
+				hintStyle.Render(i18n.T("control.checking.hint")),
 		))
 		return builder.String()
 	case phaseReport, phaseFixes, phaseRunning:
 		builder.WriteString(m.renderReport())
 		if m.log != "" {
-			builder.WriteString("\n" + panelStyle.Render(labelStyle.Render("Details")+"\n\n"+boundedLog(m.log)))
+			builder.WriteString("\n" + panelStyle.Render(labelStyle.Render(i18n.T("control.details.title"))+"\n\n"+boundedLog(m.log)))
 		}
 		if m.phase == phaseReport {
-			builder.WriteString("\n" + hintStyle.Render("Press ENTER to fix the issues · R re-run · Q quit"))
+			builder.WriteString("\n" + hintStyle.Render(i18n.T("control.report.hint")))
 		}
 		if m.phase == phaseFixes {
 			builder.WriteString("\n" + m.renderActions())
 		}
 		if m.phase == phaseRunning {
 			if m.busy {
-				builder.WriteString("\n" + hintStyle.Render(spinnerFrames[m.spin%len(spinnerFrames)]+" working…"))
+				builder.WriteString("\n" + hintStyle.Render(spinnerFrames[m.spin%len(spinnerFrames)]+" "+i18n.T("control.log.working")))
 			} else {
-				builder.WriteString("\n" + hintStyle.Render("Press ENTER or R to re-run the doctor · Q quit"))
+				builder.WriteString("\n" + hintStyle.Render(i18n.T("control.log.done_hint")))
 			}
 		}
 		return builder.String()
@@ -687,11 +701,11 @@ func (m model) View() string {
 			}
 			choices.WriteString(cursor + fieldStyle.Render(name) + "\n")
 		}
-		builder.WriteString(panelStyle.Render(labelStyle.Render("Choose a WSL distribution") + "\n\n" + choices.String() + "\n" + hintStyle.Render("ENTER selects · ESC goes back")))
+		builder.WriteString(panelStyle.Render(labelStyle.Render(i18n.T("control.distro.title")) + "\n\n" + choices.String() + "\n" + hintStyle.Render(i18n.T("control.distro.hint"))))
 		return builder.String()
 	case phaseCreds:
 		var form strings.Builder
-		labels := []string{"Apple ID email", "Apple ID password", "Storefront (default us)", "media-user-token"}
+		labels := []string{i18n.T("control.creds.email"), i18n.T("control.creds.password"), i18n.T("control.creds.storefront"), i18n.T("control.creds.token")}
 		for index, label := range labels {
 			prefix := "  "
 			if index == m.focus {
@@ -699,17 +713,17 @@ func (m model) View() string {
 			}
 			form.WriteString(prefix + hintStyle.Render(label) + "\n" + fieldStyle.Render(m.inputs[index].View()) + "\n\n")
 		}
-		builder.WriteString(panelStyle.Render(labelStyle.Render("Apple account") + "\n\n" + form.String() + hintStyle.Render("TAB/↑↓ moves · ENTER continues · ESC cancels")))
+		builder.WriteString(panelStyle.Render(labelStyle.Render(i18n.T("control.creds.title")) + "\n\n" + form.String() + hintStyle.Render(i18n.T("control.creds.hint"))))
 		if m.log != "" {
 			builder.WriteString("\n" + m.log)
 		}
 		return builder.String()
 	case phaseLogin:
 		builder.WriteString(panelStyle.Render(
-			labelStyle.Render("Additional verification — 2FA") + "\n\n" +
-				hintStyle.Render("Apple sent a 6-digit code to your trusted device.") + "\n\n" +
+			labelStyle.Render(i18n.T("control.login.title")) + "\n\n" +
+				hintStyle.Render(i18n.T("control.login.sent")) + "\n\n" +
 				fieldStyle.Render(m.inputs[0].View()) + "\n\n" +
-				hintStyle.Render("ENTER submits"),
+				hintStyle.Render(i18n.T("control.login.hint")),
 		))
 		if m.log != "" {
 			builder.WriteString("\n" + boundedLog(m.log))
@@ -732,11 +746,11 @@ func (m model) renderReport() string {
 		line := fmt.Sprintf("%s %-16s %s", style.Render(mark), check.Title, check.Detail)
 		rows.WriteString(strings.TrimRight(line, " ") + "\n")
 	}
-	headline := okStyle.Render("Environment is ready — starting the downloader")
+	headline := okStyle.Render(i18n.T("control.report.ready"))
 	if !m.report.Ready() {
-		headline = warnStyle.Render("Setup needed: " + string(m.report.Code))
+		headline = warnStyle.Render(i18n.Tf("control.report.needs", string(m.report.Code)))
 	}
-	return panelStyle.Render(labelStyle.Render("Doctor") + "\n\n" + rows.String() + "\n" + headline)
+	return panelStyle.Render(labelStyle.Render(i18n.T("control.report.title")) + "\n\n" + rows.String() + "\n" + headline)
 }
 
 func (m model) renderActions() string {
@@ -748,7 +762,7 @@ func (m model) renderActions() string {
 		}
 		rows.WriteString(cursor + fieldStyle.Render(item.title) + "\n")
 	}
-	return panelStyle.Render(labelStyle.Render("Fix") + "\n\n" + rows.String() + "\n" + hintStyle.Render("↑↓ moves · ENTER runs · R re-check · Q quits"))
+	return panelStyle.Render(labelStyle.Render(i18n.T("control.fixes.title")) + "\n\n" + rows.String() + "\n" + hintStyle.Render(i18n.T("control.fixes.hint")))
 }
 
 func boundedLog(text string) string {

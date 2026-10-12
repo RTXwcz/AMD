@@ -13,6 +13,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"ez-am/internal/i18n"
 )
 
 var (
@@ -873,24 +875,24 @@ func (m model) View() string {
 	case sLink:
 		var b strings.Builder
 		b.WriteString(titleStyle.Render("ez-am-downloader") + "\n\n")
-		b.WriteString(hintStyle.Render("粘贴 Apple Music 专辑、单曲或播放列表链接：") + "\n\n")
+		b.WriteString(hintStyle.Render(i18n.T("media.link_prompt")) + "\n\n")
 		b.WriteString(inputStyle.Render(m.url.View()) + "\n")
-		b.WriteString(hintStyle.Render("ENTER 继续  ·  CTRL+C 退出"))
+		b.WriteString(hintStyle.Render(i18n.T("media.link_hint")))
 		if m.errMsg != "" {
 			b.WriteString("\n" + errStyle.Render(m.errMsg))
 		}
 		return panelStyle.Render(b.String())
 	case sMetadata:
 		return panelStyle.Render(
-			titleStyle.Render("正在读取专辑曲目") + "\n\n" +
+			titleStyle.Render(i18n.T("media.metadata_title")) + "\n\n" +
 				okStyle.Render("● Apple Music Catalog") + "\n\n" +
-				hintStyle.Render("正在获取曲目名称和可用音频格式..."),
+				hintStyle.Render(i18n.T("media.metadata_detail")),
 		)
 	case sTracks:
 		return m.trackSelectionView()
 	case sFormat:
 		var b strings.Builder
-		b.WriteString(titleStyle.Render("选择音频格式") + "\n\n")
+		b.WriteString(titleStyle.Render(i18n.T("media.format_title")) + "\n\n")
 		for i, f := range formats {
 			cursor := "  "
 			style := hintStyle
@@ -900,7 +902,7 @@ func (m model) View() string {
 			}
 			b.WriteString(fmt.Sprintf("%s%s\n", cursor, style.Render(f.name)))
 		}
-		b.WriteString("\n" + hintStyle.Render("↑↓ 选择  ·  ENTER 下载"))
+		b.WriteString("\n" + hintStyle.Render(i18n.T("media.format_hint")))
 		if m.errMsg != "" {
 			b.WriteString("\n" + warnStyle.Render(m.errMsg))
 		}
@@ -911,24 +913,24 @@ func (m model) View() string {
 		if m.failed {
 			summary := ""
 			if len(m.jobs) > 0 {
-				failedProfile := "当前音质"
+				failedProfile := i18n.T("media.quality_current")
 				if m.jobIndex >= 0 && m.jobIndex < len(m.jobs) {
 					failedProfile = profileLabel(m.jobs[m.jobIndex].profile)
 				}
-				summary = fmt.Sprintf("已完成 %d/%d 组，%s 分组失败\n\n", m.completedJobs, len(m.jobs), failedProfile)
+				summary = i18n.Tf("media.jobs_done", m.completedJobs, len(m.jobs), failedProfile)
 			}
 			return panelStyle.Render(
-				errStyle.Render("下载失败") + "\n\n" +
+				errStyle.Render(i18n.T("media.download_failed")) + "\n\n" +
 					hintStyle.Render(summary) +
 					hintStyle.Render(fitLines(m.dlLog, maxInt(1, m.height-10), maxInt(1, m.width-6))) + "\n\n" +
-					promptStyle.Render("ENTER 或 CTRL+C 退出"),
+					promptStyle.Render(i18n.T("media.exit_hint")),
 			)
 		}
 		return panelStyle.Render(
-			okStyle.Render("✓ 下载完成") + "\n\n" +
-				hintStyle.Render("文件位置："+unixDownloadsPath()) + "\n" +
+			okStyle.Render(i18n.T("media.done")) + "\n\n" +
+				hintStyle.Render(i18n.Tf("media.files_in", unixDownloadsPath())) + "\n" +
 				hintStyle.Render("Windows："+windowsDownloadsPath()) + "\n\n" +
-				promptStyle.Render("ENTER 或 CTRL+C 退出"),
+				promptStyle.Render(i18n.T("media.exit_hint")),
 		)
 	}
 	return ""
@@ -940,13 +942,13 @@ func (m model) trackSelectionView() string {
 	selected := selectedTrackCount(m.tracks)
 	title := m.album.Name
 	if title == "" {
-		title = "选择曲目与音质"
+		title = i18n.T("media.tracks_title")
 	}
 	b.WriteString(titleStyle.Render(truncateText(title, maxInt(1, contentWidth-2))) + "\n")
 	if m.album.ArtistName != "" {
 		b.WriteString(hintStyle.Render(truncateText(m.album.ArtistName, contentWidth)) + "\n")
 	}
-	b.WriteString(fmt.Sprintf("\n已选择 %d / %d\n\n", selected, len(m.tracks)))
+	b.WriteString(i18n.Tf("media.tracks_selected", selected, len(m.tracks)))
 	start, end := visibleTrackRange(m.trackCursor, len(m.tracks), m.height-14)
 	for i := start; i < end; i++ {
 		choice := m.tracks[i]
@@ -975,16 +977,16 @@ func (m model) trackSelectionView() string {
 		}
 	}
 	if start > 0 || end < len(m.tracks) {
-		b.WriteString(hintStyle.Render(fmt.Sprintf("  显示 %d-%d / %d", start+1, end, len(m.tracks))) + "\n")
+		b.WriteString(hintStyle.Render(i18n.Tf("media.tracks_window", start+1, end, len(m.tracks))) + "\n")
 	}
 	if len(m.tracks) > 0 {
-		atmos := "不可用"
+		atmos := i18n.T("media.unavailable")
 		if containsProfile(availableProfiles(m.tracks[m.trackCursor].track), profileAtmos) {
-			atmos = "可用"
+			atmos = i18n.T("media.available")
 		}
 		b.WriteString("\n" + hintStyle.Render(truncateText("Dolby Atmos: "+atmos, contentWidth)))
 	}
-	b.WriteString("\n" + hintStyle.Render(truncateText("↑↓ 移动  ·  SPACE 选择  ·  ←→ 音质  ·  A 全选/取消  ·  G 应用到已选  ·  ENTER 下载", contentWidth)))
+	b.WriteString("\n" + hintStyle.Render(truncateText(i18n.T("media.tracks_hint"), contentWidth)))
 	if m.errMsg != "" {
 		b.WriteString("\n" + errStyle.Render(truncateText(m.errMsg, contentWidth)))
 	}
@@ -994,25 +996,25 @@ func (m model) trackSelectionView() string {
 func (m model) downloadView() string {
 	if m.cancelled {
 		return panelStyle.Render(
-			titleStyle.Render("正在停止下载") + "\n\n" +
-				hintStyle.Render("正在停止 WSL 任务并清理下载容器...") + "\n\n" +
+			titleStyle.Render(i18n.T("media.stopping")) + "\n\n" +
+				hintStyle.Render(i18n.T("media.stopping_detail")) + "\n\n" +
 				hintStyle.Render(fitLines(m.dlLog, maxInt(1, m.height-10), maxInt(1, m.width-6))),
 		)
 	}
 	jobText := ""
 	if len(m.jobs) > 0 && m.jobIndex < len(m.jobs) {
-		jobText = fmt.Sprintf("分组 %d / %d  ·  %s", m.jobIndex+1, len(m.jobs), profileLabel(m.jobs[m.jobIndex].profile))
+		jobText = i18n.Tf("media.group_progress", m.jobIndex+1, len(m.jobs), profileLabel(m.jobs[m.jobIndex].profile))
 	}
 	logText := fitLines(m.dlLog, maxInt(1, minInt(14, m.height-10)), maxInt(1, m.width-6))
 	if strings.TrimSpace(logText) == "" {
-		logText = "等待 WSL 输出..."
+		logText = i18n.T("media.awaiting_wsl")
 	}
 	return panelStyle.Render(
-		titleStyle.Render("正在下载") + "\n\n" +
+		titleStyle.Render(i18n.T("media.downloading")) + "\n\n" +
 			okStyle.Render("● "+progressLabel(m.progressStage)) + "\n" +
 			hintStyle.Render(jobText) + "\n\n" +
 			hintStyle.Render(logText) + "\n\n" +
-			promptStyle.Render("CTRL+C 停止并清理当前任务"),
+			promptStyle.Render(i18n.T("media.stop_hint")),
 	)
 }
 
@@ -1046,21 +1048,21 @@ func profileLabel(profile string) string {
 func progressLabel(progress string) string {
 	switch progress {
 	case progressValidating:
-		return "校验参数"
+		return i18n.T("media.stage.validate")
 	case progressWrapper:
-		return "检查 Wrapper 登录状态"
+		return i18n.T("media.stage.wrapper")
 	case progressContainer:
-		return "启动下载容器"
+		return i18n.T("media.stage.container")
 	case progressDownload:
-		return "下载媒体"
+		return i18n.T("media.stage.media")
 	case progressFinalize:
-		return "解密、封装与写入标签"
+		return i18n.T("media.stage.tag")
 	case progressComplete:
-		return "完成"
+		return i18n.T("media.stage.done")
 	case "stopping":
-		return "正在停止"
+		return i18n.T("media.stage.stopping")
 	default:
-		return "准备下载"
+		return i18n.T("media.stage.prepare")
 	}
 }
 

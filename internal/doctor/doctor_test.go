@@ -181,6 +181,11 @@ func TestRunWithoutWSLReportsUnsupportedPlatform(t *testing.T) {
 	if !strings.Contains(report.Text(), "wsl.exe is not available") {
 		t.Fatalf("text should explain the missing wsl.exe: %s", report.Text())
 	}
+	// A machine without WSL is the one case the app cannot repair itself, so it
+	// must at least hand the user the exact command.
+	if actions := report.Actions(); len(actions) != 1 || actions[0] != ActionInstallWSL {
+		t.Fatalf("expected the install-wsl action, got %v", actions)
+	}
 }
 
 func TestRunWithoutDistributionsNeedsDistro(t *testing.T) {

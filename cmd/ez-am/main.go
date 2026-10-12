@@ -13,6 +13,7 @@ import (
 
 	"ez-am/internal/control"
 	"ez-am/internal/doctor"
+	"ez-am/internal/i18n"
 	"ez-am/internal/media"
 	"ez-am/internal/platform/execrunner"
 )
@@ -23,6 +24,7 @@ func splitArgs(args []string) (positional []string, flagArgs []string) {
 	valueFlags := map[string]bool{
 		"--distro": true, "-distro": true,
 		"--base": true, "-base": true,
+		"--lang": true, "-lang": true,
 	}
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
@@ -42,30 +44,37 @@ func splitArgs(args []string) (positional []string, flagArgs []string) {
 	return positional, flagArgs
 }
 
-const usage = `ez-am — Apple Music lossless downloader for WSL2 + Docker
-
-Usage:
-  ez-am                 check the environment, fix what is missing, then download
-  ez-am doctor [--json] run the checks and print the report (exit 2 when not ready)
-  ez-am download        go straight to the downloader (skips the checks)
-
-Flags:
-  --distro <name>       WSL distribution to use (default: auto-detect)
-  --base <path>         runtime directory inside the distribution
-                        (default: an existing $HOME/amd, otherwise XDG data)
-  -h, --help            show this help
-`
+// prescanLang reads --lang before flag parsing so that even the usage text and
+// the flag errors come out in the requested language.
+func prescanLang(args []string) string {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if name, value, found := strings.Cut(arg, "="); found && (name == "--lang" || name == "-lang") {
+			return value
+		}
+		if arg == "--lang" || arg == "-lang" {
+			if index+1 < len(args) {
+				return args[index+1]
+			}
+		}
+	}
+	return ""
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
 func run(args []string) int {
+	// Flag > EZ_AM_LANG > saved choice > system locale.
+	i18n.Set(i18n.Resolve(prescanLang(args)))
+
 	flags := flag.NewFlagSet("ez-am", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	flags.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	flags.Usage = func() { fmt.Fprint(os.Stderr, i18n.T("cli.usage")) }
 	distro := flags.String("distro", "", "WSL distribution to use")
 	base := flags.String("base", "", "runtime directory inside the distribution")
+	lang := flags.String("lang", "", "interface language: en or zh")
 	asJSON := flags.Bool("json", false, "print the doctor report as JSON (doctor only)")
 
 	positional, flagArgs := splitArgs(args)
@@ -75,6 +84,12 @@ func run(args []string) int {
 		}
 		return 2
 	}
+	if requested := strings.TrimSpace(*lang); requested != "" {
+		i18n.Set(i18n.Normalize(requested))
+		// Remember an explicit choice for the next run; a read-only config
+		// directory must not break the command.
+		_ = i18n.Save(i18n.Current())
+	}
 
 	command := "start"
 	if len(positional) > 0 {
@@ -82,7 +97,7 @@ func run(args []string) int {
 		positional = positional[1:]
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(os.Stderr, "ez-am: unexpected argument %q\n\n%s", positional[0], usage)
+		fmt.Fprintf(os.Stderr, "ez-am: %s\n\n%s", i18n.Tf("cli.err.unexpected", positional[0]), i18n.T("cli.usage"))
 		return 2
 	}
 
@@ -91,14 +106,14 @@ func run(args []string) int {
 
 	switch command {
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		fmt.Print(i18n.T("cli.usage"))
 		return 0
 	case "doctor":
 		report := doctor.Run(ctx, doctor.Inputs{Runner: runner, Distro: *distro, Base: *base})
 		if *asJSON {
 			encoded, err := report.JSON()
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "ez-am: could not encode the report:", err)
+				fmt.Fprintln(os.Stderr, "ez-am:", i18n.Tf("cli.err.report", err.Error()))
 				return 1
 			}
 			fmt.Println(string(encoded))
@@ -122,7 +137,7 @@ func run(args []string) int {
 		}
 		return media.RunWithTarget(result.Distro, result.Base)
 	default:
-		fmt.Fprintf(os.Stderr, "ez-am: unknown command %q\n\n%s", command, strings.TrimSpace(usage))
+		fmt.Fprintf(os.Stderr, "ez-am: %s\n\n%s", i18n.Tf("cli.err.unknown", command), strings.TrimSpace(i18n.T("cli.usage")))
 		return 2
 	}
 }
