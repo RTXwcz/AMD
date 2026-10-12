@@ -200,6 +200,11 @@ or clears all, and `G` applies the current quality to compatible selected
 tracks. The selection is grouped by quality so each profile goes through one
 container.
 
+**Interface language.** The deploy wizard (`ez-am-deploy.exe`) is English; the
+downloader TUI (`ez-am-downloader.exe`) is currently Chinese only. Both keep
+their text in plain Go string literals, so translating one is a contained
+change.
+
 ### Rebuilding them
 
 Go must be available somewhere; on Windows-only machines you can cross-compile
