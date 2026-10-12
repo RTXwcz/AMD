@@ -5,12 +5,14 @@ set -euo pipefail
 BASE="${1:-/home/rtxwcz/amd}"
 SRC="${2:-/mnt/d/amd}"
 OWNER="${OWNER:-rtxwcz}"
+# The guard stays: the checkout location is explicit, never guessed.
+SRC_EXPECTED="${SRC_EXPECTED:-/mnt/d/amd}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "[!] run this synchronizer as WSL root" >&2
   exit 1
 fi
-if [ "$BASE" != "/home/$OWNER/amd" ] || [ "$SRC" != "/mnt/d/amd" ]; then
+if [ "$BASE" != "/home/$OWNER/amd" ] || [ "$SRC" != "$SRC_EXPECTED" ]; then
   echo "[!] refusing an unexpected source or destination" >&2
   exit 1
 fi

@@ -9,6 +9,9 @@ ENV_FILE="$AMD_BASE/.env"
 DATA_DIR="$AMD_BASE/wrapper-data"
 CONFIG_FILE="$AMD_BASE/config/config.yaml"
 SESSION_DB="$DATA_DIR/data/com.apple.android.music/files/mpl_db/kvs.sqlitedb"
+# The wrapper's own entrypoint creates this tree, but login.sh starts
+# /app/wrapper directly, so a fresh runtime has to have it prepared here.
+DATA_SKELETON_DIR="$DATA_DIR/data/com.apple.android.music/files"
 WRAPPER_IMAGE="${WRAPPER_IMAGE:-local/wrapper:latest}"
 LOGIN_CONTAINER="amd-wrapper-login"
 AUTH_CONTAINER="amd-wrapper-auth"
@@ -182,6 +185,21 @@ remove_container() {
   fi
 }
 
+# Without this directory the wrapper cannot provision its machine data
+# (anisette), and Apple answers the credential request with a generic
+# authentication error before any 2FA prompt is shown.
+ensure_data_skeleton() {
+  if [ -d "$DATA_SKELETON_DIR/mpl_db" ]; then
+    return 0
+  fi
+  if ! mkdir -p "$DATA_SKELETON_DIR/mpl_db" 2>/dev/null; then
+    echo "[!] Could not create $DATA_SKELETON_DIR." >&2
+    echo "[!] Create it as root (or through docker) before logging in." >&2
+    return 1
+  fi
+  echo "[+] Prepared the wrapper data directory: $DATA_SKELETON_DIR"
+}
+
 start_long_lived() {
   if ! session_db_valid; then
     echo "[!] Cannot start the wrapper without valid persisted session data." >&2
@@ -195,6 +213,8 @@ start_long_lived() {
     echo "[!] $LOGIN_CONTAINER already exists; preserving it for diagnostics." >&2
     return 1
   fi
+
+  ensure_data_skeleton || return 1
 
   local login_args=(
     run -d
@@ -260,6 +280,8 @@ start_authentication() {
     echo "[!] $DATA_DIR is missing. Run setup.sh first; session data will not be created here." >&2
     return 1
   fi
+
+  ensure_data_skeleton || return 1
 
   if container_exists "$AUTH_CONTAINER"; then
     if container_running "$AUTH_CONTAINER"; then

@@ -1,176 +1,137 @@
 # ez-am-downloader
 
-This repository is a small Windows/WSL2 operator layer around two upstream
-projects:
+A small Windows + WSL2 operator layer around two upstream projects:
 
-- [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader)
-- [WorldObservationLog/wrapper](https://github.com/WorldObservationLog/wrapper)
+- [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader) — fetches Apple Music tracks
+- [WorldObservationLog/wrapper](https://github.com/WorldObservationLog/wrapper) — decrypts them (needs an active Apple Music subscription)
 
-It is intended for personal backups of content that the operator is entitled
-to access. Apple Music subscription requirements, DRM restrictions, upstream
-availability, and local law still apply. This project does not bypass Apple
-account security.
+It exists to make the boring parts repeatable: one deployment engine, one
+wrapper lifecycle owner, one download entry point, and no secret ever written
+into a script or a log.
 
-## Architecture
+Intended for personal backups of content you are entitled to access. Apple
+Music subscription terms, DRM restrictions, upstream availability and local law
+still apply. This project does not bypass Apple account security.
 
-The durable state lives in WSL, not in the Windows checkout:
+## What's in the box
 
-```text
-Windows TUI / shell
-        |
-        v
-WSL ~/amd/login.sh ---- amd-wrapper-login (ports 10020/20020/30020)
-        |
-        +---- dl.sh ---- one-shot downloader container
-        |
-        +---- downloads/
-        +---- wrapper-data/       persisted Apple session
-        +---- config/config.yaml
-        +---- .env                Apple ID credentials
-```
+| File | Role |
+| --- | --- |
+| `setup.sh` | Deployment engine. Checks Docker, pulls the pinned downloader image, builds or reuses the local wrapper image, and writes `~/amd/.env` + `~/amd/config/config.yaml`. |
+| `login.sh` | The only owner of the wrapper lifecycle (`start` / `submit` / `status` / `interactive`). Runs Apple authentication in a visible terminal so a 2FA code never passes through a chat or a log. |
+| `dl.sh` | One-shot download engine. Refuses to run without a healthy wrapper and runs the downloader in the wrapper's network namespace. |
+| `compose.yaml` | Reference only: mounts, loopback ports and the canonical container name. `login.sh` is the supported entry point. |
+| `sync_existing_wsl.sh` | Guarded synchronizer for an existing deployment: installs the runtime files without regenerating credentials or touching media/session data. Its safety guard expects the checkout at `/mnt/d/amd` and the runtime owner `rtxwcz`; set `SRC_EXPECTED` and `OWNER` for a different layout. |
+| `deploy/`, `downloader/` | Optional Go TUIs (deployment wizard, download front end) that shell out to the same WSL scripts. |
+| `tests/` | Shell regression suite plus media verification helpers. |
 
-`dl.sh` never creates an unlogged wrapper. It checks `login.sh status` first,
-then runs the pinned downloader image in the wrapper's network namespace.
-The published wrapper ports bind to loopback only.
+## Requirements
 
-## Prerequisites
-
-1. Windows 10 or 11 with WSL2 and an Ubuntu (or compatible) distro.
-2. Docker Desktop running with WSL Integration enabled for that distro.
-3. An active Apple Music subscription.
-4. Network access to GitHub and `ghcr.io` during installation.
+1. Windows 10/11 with WSL2 and an Ubuntu-compatible distribution.
+2. Docker reachable **from inside that distro** — either a Docker daemon
+   installed in the distro itself, or Docker Desktop with WSL integration
+   enabled for it.
+3. Docker BuildKit (the `docker buildx` CLI plugin). The wrapper image's
+   upstream `Dockerfile` uses `RUN --mount=type=cache`, which the legacy builder
+   rejects with `the --mount option requires BuildKit`.
+4. An active Apple Music subscription.
 5. A `media-user-token` copied from an authenticated `music.apple.com` session.
+6. Network access to `github.com` and `ghcr.io` during installation.
 
-The wrapper login may require Apple 2FA. Keep the trusted device ready before
-starting an authentication attempt.
+Keep a trusted Apple device at hand: the wrapper login may require 2FA.
 
-## Fresh installation
+## Quick start
 
-Run the setup script from the checkout so it can find the sibling runtime
-files:
+Run the scripts from the checkout — `setup.sh` locates its sibling runtime files
+relative to itself:
+
+```bash
+# In a WSL shell, inside the checkout (e.g. /mnt/e/amd)
+bash setup.sh                  # Apple ID, password, media-user-token, storefront
+bash login.sh interactive      # enter the 6-digit code in this terminal
+bash login.sh status           # expect: listening on 10020/20020/30020
+bash dl.sh 'https://music.apple.com/us/album/example/123' alac-192
+```
+
+Prefer a PowerShell one-liner? Adapt the mount path to where the checkout lives:
 
 ```powershell
-wsl.exe -d Ubuntu --exec bash /mnt/d/amd/setup.sh
+wsl.exe -d Ubuntu --exec bash /mnt/e/amd/setup.sh
 ```
 
-`setup.sh` checks Docker Desktop, pulls the pinned downloader image, builds or
-reuses the local wrapper image, and writes `~/amd/.env` and
-`~/amd/config/config.yaml`. Existing secret files are timestamped before they
-are replaced. It does not install a second Docker daemon or upgrade the WSL
-distro.
+`setup.sh` is interactive by default. For unattended installs it reads
+`EZ_USER`, `EZ_PASS`, `EZ_TOKEN` and `EZ_STOREFRONT` from the environment
+instead, and never echoes the values.
 
-For an existing deployment where configuration and session data must be
-preserved, do not rerun `setup.sh` merely to update scripts. Use the guarded
-synchronizer from an elevated WSL shell:
+Existing secret files are never overwritten silently: they are copied to a
+timestamped `.bak.*` next to the original before new ones are written.
 
-```powershell
-wsl.exe -d Ubuntu -u root --exec bash /mnt/d/amd/sync_existing_wsl.sh
-```
+## Commands
 
-It atomically installs the four runtime files (`setup.sh`, `dl.sh`, `login.sh`,
-and `compose.yaml`), changes only `exit-on-error`, tightens secret/session
-permissions, and refuses unexpected source or destination paths. It does not
-remove containers, media, `.env`, or `wrapper-data`.
-
-The Windows binaries are optional convenience front ends. They look for
-`setup.sh` beside the executable or in its trusted parent directory; they do
-not execute a `setup.sh` found in the current working directory.
-
-## Login and recovery
-
-Run authentication in a visible WSL terminal so the 2FA code never passes
-through a chat or log:
+### `login.sh`
 
 ```bash
-bash ~/amd/login.sh interactive
+bash login.sh status           # health check: session database + live ports
+bash login.sh interactive      # log in (or reuse a cached session) and submit 2FA here
+bash login.sh start            # restore a cached session, or open a 2FA attempt for a later submit
+bash login.sh submit 123456    # send a code to an attempt started with `start`
 ```
 
-The temporary authentication container waits for roughly 60 seconds after
-Apple requests a code. Enter the six-digit code immediately in that terminal.
-Do not restart the container while it is waiting. The code is written through
-`docker exec` and is not embedded in shell source.
+The long-lived container is named `amd-wrapper-login` and publishes
+10020/20020/30020 on loopback only. Its restart policy is `unless-stopped`.
+`login.sh` also prepares the wrapper's data directory — the upstream image
+entrypoint does that, but `login.sh` starts `/app/wrapper` directly, so a fresh
+runtime needs it too.
 
-Useful lifecycle commands:
+### `dl.sh`
 
 ```bash
-bash ~/amd/login.sh status       # healthy session and all three ports
-bash ~/amd/login.sh start       # restore a cached session or start a 2FA attempt
-bash ~/amd/login.sh submit 123456
+bash dl.sh <apple-music-url> [profile] [track-id ...]
 ```
 
-`start` leaves an active authentication request for a later `submit`. The
-long-lived container is named `amd-wrapper-login`; old diagnostic containers
-are not removed automatically.
-
-## Download
-
-Use either the downloader TUI (`dist/ez-am-downloader.exe`) or the shell
-engine:
-
-```bash
-bash ~/amd/dl.sh 'https://music.apple.com/us/album/example/123' alac-48
-```
-
-For album links, the Windows TUI reads the public Apple Music catalog and
-shows every track. All tracks are selected by default. Use Up/Down to move,
-Space to select, Left/Right to cycle the current track's available quality,
-`A` to select or clear all, and `G` to apply the current quality to compatible
-selected tracks. Dolby Atmos is offered only when the track advertises it.
-Press Enter to download; selected tracks are grouped by quality so one
-container handles each profile.
-
-Supported shell profiles are:
-
-| Argument | Meaning |
+| Profile | Meaning |
 | --- | --- |
 | `alac-48` | ALAC capped at 48 kHz |
 | `alac-96` | ALAC capped at 96 kHz |
-| `alac-192` | ALAC capped at 192 kHz |
+| `alac-192` | ALAC capped at 192 kHz (default) |
 | `atmos` | Dolby Atmos when the source provides it |
 | `aac` | AAC 256 |
 | `alac`, `hires` | Compatibility aliases for `alac-192` |
 
-To download selected album tracks, pass their numeric Apple Music IDs as
-separate arguments. The script adds `--song` and keeps each generated URL as a
-separate Docker argument:
+Pass numeric Apple Music track IDs after the profile to download individual
+tracks from an album link; the script adds `--song` and keeps every generated
+URL as a separate Docker argument. Files land under `~/amd/downloads`
+(`ALAC/`, `Atmos/`, `AAC/`, `MV/`). The downloader's real exit code is
+propagated, and upstream token fields are redacted from streamed output.
 
-```bash
-bash ~/amd/dl.sh 'https://music.apple.com/us/album/example/123?l=en-US' \
-  alac-48 456 789
+### Overrides
+
+Every script honours `AMD_BASE` (runtime location, default `~/amd`),
+`WRAPPER_IMAGE` and `DOWNLOADER_IMAGE`.
+
+## Layout
+
+The durable state lives in WSL, not in the Windows checkout:
+
+```text
+Windows shell / Go TUI
+        |
+        v
+WSL ~/amd/setup.sh   ---- writes .env + config/config.yaml
+WSL ~/amd/login.sh   ---- amd-wrapper-login  (loopback 10020/20020/30020)
+        |
+        +---- dl.sh  ---- one-shot downloader container in the wrapper netns
+        |
+        +---- downloads/       finished media
+        +---- wrapper-data/    persisted Apple session (do not delete)
+        +---- config/config.yaml
+        +---- .env
 ```
 
-The downloader returns the real container exit code. Invalid URLs and missing
-wrapper sessions fail before a download container is started. Each download
-gets a validated container name and signal cleanup. `Ctrl+C` in the Windows
-downloader cancels the WSL child, stops that named container, and exits with
-code 130 only after both cleanup paths finish. Stable stage markers are
-streamed to the TUI, and upstream media/authorization token fields are
-redacted before output is displayed or logged.
+## Optional Windows TUIs
 
-Files are written below `~/amd/downloads` (for example `ALAC`, `Atmos`, and
-`AAC`). Existing media is never removed by setup or login.
-
-## Secret and state boundaries
-
-- `~/amd/.env` contains the Apple ID and password.
-- `~/amd/config/config.yaml` contains the media token and downloader settings.
-- `~/amd/wrapper-data` contains the persisted wrapper session database.
-- Keep `.env` and `config.yaml` mode `0600`; keep their parent config directory
-  mode `0700`.
-- Never paste an Apple password, media token, session database, or 2FA code
-  into an issue, chat, or build log.
-- Historical deployment notes may contain credentials. Review and redact them
-  before sharing or committing. Rotate the Apple password and media token if
-  they have ever been recorded in plaintext.
-
-The repository ignores local backups and deployment logs, but ignore rules do
-not remove files that were already committed. Check repository history before
-publishing this directory.
-
-## Build from source
-
-Go builds should disable VCS stamping because this deployment directory may be
-distributed without a valid Git worktree:
+The Go front ends are convenience wrappers; the shell scripts are the source of
+truth. They are not committed as binaries — build them yourself:
 
 ```bash
 cd deploy
@@ -182,28 +143,62 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o ../dist/ez-a
 Verification used by this tree:
 
 ```bash
-go test -count=1 ./...
 go vet ./...
+go test -count=1 ./...          # in deploy/ and downloader/
+bash tests/shell_regression_test.sh   # needs bash + python3 (run it in WSL)
 ```
+
+The downloader TUI reads the public Apple Music catalog for album links, lists
+every track (all selected by default), lets you cycle per-track quality with
+Left/Right, apply one quality to compatible tracks with `G`, and groups the
+selection by quality so each profile goes through one container.
+
+## Configuration
+
+`setup.sh` writes a complete `config/config.yaml`. The keys that matter most:
+
+| Key | Purpose |
+| --- | --- |
+| `media-user-token` | Enables lyrics, artwork, AAC and music videos. |
+| `storefront` | Two-letter storefront (`us`, `jp`, `hk`, ...). |
+| `decrypt-m3u8-port` | `127.0.0.1:10020` — the wrapper's decrypt port. |
+| `exit-on-error` | `true`, so a failed download fails the run instead of hanging. |
+| `alac-max` / `atmos-max` / `aac-type` | Quality ceilings handed to the downloader. |
+| `*-save-folder` | Output directories inside the container (`/downloads/...`). |
 
 ## Troubleshooting
 
-`login.sh status` is the health check. If it fails, inspect the named
-`amd-wrapper-login` container and run `bash ~/amd/login.sh interactive`; do not
-let a download script silently create a replacement wrapper. If Docker is not
-available, start Docker Desktop and enable WSL Integration rather than
-installing another daemon inside Ubuntu.
+| Symptom | Cause / fix |
+| --- | --- |
+| `docker build` stops with `the --mount option requires BuildKit` | The CLI has no buildx plugin. Install it (e.g. the `docker-buildx` package, or the `docker-buildx` binary into `~/.docker/cli-plugins/`). `setup.sh` reuses an existing `local/wrapper:latest`, so the build only matters on the first run or after an image change. |
+| `[!] The temporary authentication container exited before requesting 2FA.` | Usually the wrapper could not provision machine data. Check `docker logs amd-wrapper-auth` for `anisetteRequest status: -45061` / `auth error: code=-1703664312`. Confirm `~/amd/wrapper-data/data/com.apple.android.music/files/mpl_db` exists (current `login.sh` creates it automatically). |
+| Login asks for a code you did not request, or the code is rejected | The wrapper waits roughly 60 seconds; do **not** restart or re-create the container while it waits, or Apple invalidates the code. Repeated failures can trigger a 15–30 minute Apple cooldown. |
+| `[!] Persisted wrapper session is missing or empty` | `~/amd/wrapper-data` is empty or was cleared. Run `bash login.sh interactive` again. |
+| `[!] amd-wrapper-login is running but ports ... are not listening` | Look at `docker logs amd-wrapper-login`. Do not remove the container before capturing the log. |
+| `fetch failed` from a wrapper-side client | The container takes a moment to open its ports after a WSL restart; `bash login.sh status` is the authoritative check. |
+| Everything worked yesterday, nothing works today | `docker ps -a --filter name=amd-`: if the container is missing, restore it with `bash login.sh start`; never let a download start a replacement wrapper. |
 
-The `compose.yaml` file is a reference for mounts, loopback ports, and the
-canonical container name. `login.sh` owns the authentication lifecycle and is
-the supported entry point for starting the wrapper.
+## Security notes
 
-## Upstream references
+- `~/amd/.env` holds the Apple ID and password; `~/amd/config/config.yaml`
+  holds the media token. Keep them `0600` with a `0700` config directory —
+  `setup.sh` does this for you.
+- `.gitignore` excludes `.env`, `config/config.yaml`, `wrapper-data/`,
+  `downloads/`, `*.bak.*` and deployment logs. Do not weaken it.
+- Never paste a password, media token, session database or 2FA code into an
+  issue, a chat or a build log. If one of them has ever been stored in
+  plaintext, rotate it.
+- `~/amd/wrapper-data` **is** the login state. Deleting it (or the container)
+  forces a new Apple authentication, including 2FA, and an empty directory tree
+  will break the login until the data skeleton exists again.
 
-- [zhaarey README-CN](https://github.com/zhaarey/apple-music-downloader/blob/main/README-CN.md)
+## Upstream and licensing
+
+- [zhaarey/apple-music-downloader README-CN](https://github.com/zhaarey/apple-music-downloader/blob/main/README-CN.md)
 - [WorldObservationLog/wrapper](https://github.com/WorldObservationLog/wrapper)
 - [alacleaker/apple-music-alac-downloader](https://github.com/alacleaker/apple-music-alac-downloader)
-- [Deployment notes](./DEPLOY_LOG.md) (private, do not publish without review)
 
-This operator layer is released under the repository's chosen license. Verify
-the upstream licenses and Apple terms before distributing binaries or media.
+This layer is a thin operator wrapper: it does not bundle upstream code, and it
+builds the wrapper image from the upstream release archive at install time.
+Check the upstream licenses and Apple's terms before redistributing binaries or
+media. Add an explicit `LICENSE` file if you intend to publish this repository.

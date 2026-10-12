@@ -51,6 +51,8 @@ contains "$ROOT/login.sh" 'STATE=NEED_2FA' "login exposes a machine-readable 2FA
 not_contains "$ROOT/login.sh" 'docker logs "$LOGIN_CONTAINER"' "login health never trusts historical login logs"
 contains "$ROOT/login.sh" '--restart unless-stopped' "login configures the long-lived restart policy"
 contains "$ROOT/login.sh" 'start_long_lived' "login can rebuild a runtime from cached session data"
+contains "$ROOT/login.sh" 'ensure_data_skeleton' "login prepares the wrapper data skeleton the entrypoint would create"
+contains "$ROOT/login.sh" 'DATA_SKELETON_DIR="$DATA_DIR/data/com.apple.android.music/files"' "login targets the wrapper base directory"
 contains "$ROOT/login.sh" 'require_docker || return 1' "login does not rely on inherited errexit"
 contains "$ROOT/login.sh" 'load_credentials || return 1' "login stops after missing credentials"
 contains "$ROOT/login.sh" 'trap handle_auth_signal INT TERM HUP' "login cleans owned authentication on signals"
