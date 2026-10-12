@@ -1,86 +1,75 @@
 # ez-am-downloader
 
-A small Windows + WSL2 operator layer around two upstream projects:
+One Windows executable, one flow: **run it, it checks your machine, fixes what
+it can, then downloads.**
+
+`ez-am.exe` is a small operator layer around two upstream projects:
 
 - [zhaarey/apple-music-downloader](https://github.com/zhaarey/apple-music-downloader) — fetches Apple Music tracks
 - [WorldObservationLog/wrapper](https://github.com/WorldObservationLog/wrapper) — decrypts them (needs an active Apple Music subscription)
 
-It exists to make the boring parts repeatable: one deployment engine, one
-wrapper lifecycle owner, one download entry point, and no secret ever written
-into a script or a log.
+It exists to make the boring parts repeatable: one entry point, one deployment
+engine, one wrapper lifecycle owner, and no secret ever written into a script or
+a log.
 
-On Windows you normally use it through the two front ends in `dist/`: run
-`ez-am-deploy.exe` once (wizard → images → 2FA), then `ez-am-downloader.exe`
-whenever you want media. The shell scripts those two drive are the same engine,
-documented below for headless installs and for anyone who prefers a terminal.
-
-Intended for personal backups of content you are entitled to access. Apple
-Music subscription terms, DRM restrictions, upstream availability and local law
-still apply. This project does not bypass Apple account security.
+Intended for personal backups of content you are entitled to access. Apple Music
+subscription terms, DRM restrictions, upstream availability and local law still
+apply. This project does not bypass Apple account security.
 
 ## What's in the box
 
-| File | Role |
+| Path | Role |
 | --- | --- |
-| `setup.sh` | Deployment engine. Checks Docker, pulls the pinned downloader image, builds or reuses the local wrapper image, and writes `~/amd/.env` + `~/amd/config/config.yaml`. |
-| `login.sh` | The only owner of the wrapper lifecycle (`start` / `submit` / `status` / `interactive`). Runs Apple authentication in a visible terminal so a 2FA code never passes through a chat or a log. |
-| `dl.sh` | One-shot download engine. Refuses to run without a healthy wrapper and runs the downloader in the wrapper's network namespace. |
-| `compose.yaml` | Reference only: mounts, loopback ports and the canonical container name. `login.sh` is the supported entry point. |
-| `sync_existing_wsl.sh` | Guarded synchronizer for an existing deployment: installs the runtime files without regenerating credentials or touching media/session data. Its safety guard expects the checkout at `/mnt/d/amd` and the runtime owner `rtxwcz`; set `SRC_EXPECTED` and `OWNER` for a different layout. |
-| `dist/ez-am-deploy.exe`, `dist/ez-am-downloader.exe` | Prebuilt Windows front ends (wizard + downloader TUI). Both are Go, no runtime needed. |
-| `deploy/`, `downloader/` | Their Go sources, plus the tests that cover them. |
-| `tests/` | Shell regression suite plus media verification helpers. |
+| `dist/ez-am.exe` | The unified Windows front end. Doctor, guided fixes, downloader. |
+| `cmd/ez-am` | Its entry point: subcommand routing and the `doctor` CLI. |
+| `internal/doctor` | Read-only diagnosis: WSL, distribution, Docker, BuildKit, runtime files, credentials, images, wrapper session, output directory. |
+| `internal/control` | The supervisor TUI: runs the doctor, offers the fixes it can perform, re-checks, then hands over to the media engine. |
+| `internal/media` | Apple Music URL/catalog parsing, track and quality selection, grouped download jobs, cancellation. |
+| `internal/platform`, `internal/runtime` | WSL discovery and probing, embedded runtime assets and their install plan. |
+| `setup.sh`, `login.sh`, `dl.sh`, `compose.yaml` | The shell engine the app drives; also usable directly. |
+| `tests/` | Shell regression suite and media verification helpers. |
 
 ## Requirements
 
 1. Windows 10/11 with WSL2 and an Ubuntu-compatible distribution.
-2. Docker reachable **from inside that distro** — either a Docker daemon
-   installed in the distro itself, or Docker Desktop with WSL integration
-   enabled for it.
-3. Docker BuildKit (the `docker buildx` CLI plugin). The wrapper image's
-   upstream `Dockerfile` uses `RUN --mount=type=cache`, which the legacy builder
-   rejects with `the --mount option requires BuildKit`.
-4. An active Apple Music subscription.
-5. A `media-user-token` copied from an authenticated `music.apple.com` session.
-6. Network access to `github.com` and `ghcr.io` during installation.
+2. Docker reachable **from inside that distro** — a Docker daemon installed in
+   the distro, or Docker Desktop with WSL integration. Docker Desktop is not
+   required.
+3. Docker BuildKit (`docker buildx`) — needed once, to build the wrapper image.
+   The app reports it as a warning and tells you how to install it.
+4. An active Apple Music subscription and a `media-user-token`.
+5. Network access to `github.com` and `ghcr.io` during installation.
 
-Keep a trusted Apple device at hand: the wrapper login may require 2FA.
-
-## Quick start (Windows, recommended)
-
-The intended way to use this project on Windows is two double-clicks. No shell,
-no typed commands.
+## Quick start (Windows)
 
 1. **Get the checkout.** Download the ZIP (green *Code* button) or
-   `git clone https://github.com/RTXwcz/AMD`, then unpack it somewhere permanent
-   such as `D:\amd`. Keep the layout intact — the wizard looks for `setup.sh`
-   next to its own executable or one directory above it, and that is exactly
-   what `dist\ez-am-deploy.exe` sees.
-2. **Double-click `dist\ez-am-deploy.exe`** and follow the wizard:
+   `git clone https://github.com/RTXwcz/AMD`, then unpack it somewhere permanent.
+2. **Double-click `dist\ez-am.exe`.** It starts with the doctor:
 
-   | Step | What you provide |
+   | Check | What it looks at |
    | --- | --- |
-   | 1/3 Account | Apple ID email, password, storefront (default `us`) |
-   | 2/3 media-user-token | the token copied from `music.apple.com` DevTools (see below) |
-   | 3/3 Deploying | nothing — it checks Docker, pulls the pinned images, builds the wrapper image and writes the config |
-   | Additional verification — 2FA | the 6-digit code Apple sends to your trusted device |
+   | WSL / Distribution | `wsl.exe`, and which distributions you can use |
+   | Docker / BuildKit | whether the daemon answers inside the distro |
+   | Runtime files | `dl.sh`, `login.sh`, `compose.yaml` under the runtime base |
+   | Credentials | `~/amd/.env` + `config/config.yaml` (existence only — never their contents) |
+   | Images | the pinned downloader image and `local/wrapper:latest` |
+   | Wrapper session | `login.sh status`, i.e. the three published ports |
+   | Output directory | whether media can be written |
 
-   It ends with `✓ Deployment complete!` and points you at the downloader.
-3. **Double-click `dist\ez-am-downloader.exe`.** Paste an Apple Music link, pick
-   tracks and quality with the keyboard, press Enter. Finished media shows up in
+   Green rows are fine. Red rows come with actions: install the bundled runtime,
+   enter the Apple account and media token, log in (2FA), pick a distribution, or
+   instructions to start Docker / install buildx. The app re-checks after each
+   fix and starts the downloader as soon as everything is green.
+3. **Paste an Apple Music link** in the downloader, pick tracks and quality with
+   the keyboard, press Enter. Finished media lands in
    `\\wsl.localhost\Ubuntu\home\<you>\amd\downloads`.
 
-Windows SmartScreen may warn about an unsigned binary the first time you run it:
-choose *More info → Run anyway*.
-
-The wizard needs WSL2 with a distro, Docker reachable from that distro, an Apple
-Music subscription and GitHub access. It hands the credentials to `setup.sh`
-through environment variables and clears its own copies afterwards; it never
-writes a secret to disk itself.
+Windows SmartScreen may warn about an unsigned binary the first time: choose
+*More info → Run anyway*.
 
 ### Getting the `media-user-token`
 
-Open `music.apple.com` in a browser where you are signed in, then use either:
+While signed in on `music.apple.com`, use either:
 
 - **Application tab** (Chromium): DevTools → Application → Storage → Cookies →
   search `media-user-token`.
@@ -88,183 +77,98 @@ Open `music.apple.com` in a browser where you are signed in, then use either:
   `Cookie:` headers for `media-user-token=`. It is not always in the first
   request — scroll through a few.
 
-## Quick start (command line)
+## Command line
 
-The shell scripts are the same engine the wizard drives, and remain the right
-tool for headless installs, servers and CI. Run them from the checkout —
-`setup.sh` locates its sibling runtime files relative to itself:
+The same executable doubles as a CLI, which is also what CI and headless setups
+should use:
 
 ```bash
-# In a WSL shell, inside the checkout (e.g. /mnt/e/amd)
-bash setup.sh                  # Apple ID, password, media-user-token, storefront
+ez-am                  # doctor, guided fixes, then the downloader
+ez-am doctor           # diagnosis only: exit 0 when ready, 2 when it is not
+ez-am doctor --json    # machine-readable report
+ez-am download         # skip the checks and go straight to the downloader
+
+ez-am --distro Ubuntu --base /home/you/amd    # explicit target
+```
+
+The shell engine remains available on its own:
+
+```bash
+bash setup.sh                  # interactive: Apple ID, password, media token, storefront
 bash login.sh interactive      # enter the 6-digit code in this terminal
 bash login.sh status           # expect: listening on 10020/20020/30020
 bash dl.sh 'https://music.apple.com/us/album/example/123' alac-192
 ```
 
-Prefer a PowerShell one-liner? Adapt the mount path to where the checkout lives:
+`setup.sh` also accepts `EZ_USER`, `EZ_PASS`, `EZ_TOKEN` and `EZ_STOREFRONT`
+for unattended installs, and never echoes the values. Existing secret files are
+timestamped (`.bak.*`) before they are replaced.
 
-```powershell
-wsl.exe -d Ubuntu --exec bash /mnt/e/amd/setup.sh
-```
+## Download profiles
 
-`setup.sh` is interactive by default. For unattended installs it reads
-`EZ_USER`, `EZ_PASS`, `EZ_TOKEN` and `EZ_STOREFRONT` from the environment
-instead, and never echoes the values.
-
-Existing secret files are never overwritten silently: they are copied to a
-timestamped `.bak.*` next to the original before new ones are written.
-
-## Commands
-
-### `login.sh`
-
-```bash
-bash login.sh status           # health check: session database + live ports
-bash login.sh interactive      # log in (or reuse a cached session) and submit 2FA here
-bash login.sh start            # restore a cached session, or open a 2FA attempt for a later submit
-bash login.sh submit 123456    # send a code to an attempt started with `start`
-```
-
-The long-lived container is named `amd-wrapper-login` and publishes
-10020/20020/30020 on loopback only. Its restart policy is `unless-stopped`.
-`login.sh` also prepares the wrapper's data directory — the upstream image
-entrypoint does that, but `login.sh` starts `/app/wrapper` directly, so a fresh
-runtime needs it too.
-
-### `dl.sh`
-
-```bash
-bash dl.sh <apple-music-url> [profile] [track-id ...]
-```
-
-| Profile | Meaning |
+| Argument | Meaning |
 | --- | --- |
-| `alac-48` | ALAC capped at 48 kHz |
-| `alac-96` | ALAC capped at 96 kHz |
-| `alac-192` | ALAC capped at 192 kHz (default) |
+| `alac-48` / `alac-96` / `alac-192` | ALAC capped at 48 / 96 / 192 kHz |
 | `atmos` | Dolby Atmos when the source provides it |
 | `aac` | AAC 256 |
-| `alac`, `hires` | Compatibility aliases for `alac-192` |
+| `alac`, `hires` | Aliases for `alac-192` |
 
 Pass numeric Apple Music track IDs after the profile to download individual
-tracks from an album link; the script adds `--song` and keeps every generated
-URL as a separate Docker argument. Files land under `~/amd/downloads`
-(`ALAC/`, `Atmos/`, `AAC/`, `MV/`). The downloader's real exit code is
-propagated, and upstream token fields are redacted from streamed output.
-
-### Overrides
-
-Every script honours `AMD_BASE` (runtime location, default `~/amd`),
-`WRAPPER_IMAGE` and `DOWNLOADER_IMAGE`.
+tracks from an album link. The downloader's real exit code is propagated and
+upstream token fields are redacted from streamed output.
 
 ## Layout
 
-The durable state lives in WSL, not in the Windows checkout:
-
 ```text
-Windows shell / Go TUI
-        |
-        v
-WSL ~/amd/setup.sh   ---- writes .env + config/config.yaml
-WSL ~/amd/login.sh   ---- amd-wrapper-login  (loopback 10020/20020/30020)
-        |
-        +---- dl.sh  ---- one-shot downloader container in the wrapper netns
-        |
-        +---- downloads/       finished media
-        +---- wrapper-data/    persisted Apple session (do not delete)
-        +---- config/config.yaml
-        +---- .env
+Windows: ez-am.exe  ──►  wsl.exe
+                          │
+                          ├── doctor + install + credentials + 2FA (control)
+                          └── dl.sh ── one-shot downloader container
+                                        (shares the wrapper network namespace)
+             WSL state (default ~/amd, XDG when fresh):
+               .env, config/config.yaml, wrapper-data/, downloads/
 ```
 
-## The two Windows front ends
-
-Both binaries are committed under `dist/`, built from the sources in this tree
-with `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false`. They
-carry no runtime dependency; they call `wsl.exe` under the hood.
-
-**`ez-am-deploy.exe`** — the first-run wizard. It locates `setup.sh` beside
-itself or in the parent directory (so it works from `dist/`), collects the Apple
-ID, password, storefront and media-user-token, runs `setup.sh` with them as
-environment variables, then drives `login.sh start` / `login.sh submit <code>`
-for the 2FA step. Credentials are kept in memory only and cleared after the
-deploy stage; the wizard shows redacted diagnostics when a step fails.
-
-**`ez-am-downloader.exe`** — the day-to-day front end. It shells out to
-`~/amd/dl.sh`, so it inherits every safety rule of the shell engine: it refuses
-to run without a healthy wrapper, propagates the real container exit code, and
-redacts token fields from the streamed log. For album links it reads the public
-Apple Music catalog and lists every track (all selected by default); Up/Down
-moves, Space toggles, Left/Right cycles the current track's quality, `A` selects
-or clears all, and `G` applies the current quality to compatible selected
-tracks. The selection is grouped by quality so each profile goes through one
-container.
-
-**Interface language.** The deploy wizard (`ez-am-deploy.exe`) is English; the
-downloader TUI (`ez-am-downloader.exe`) is currently Chinese only. Both keep
-their text in plain Go string literals, so translating one is a contained
-change.
-
-### Rebuilding them
-
-Go must be available somewhere; on Windows-only machines you can cross-compile
-from WSL:
-
-```bash
-cd deploy
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o ../dist/ez-am-deploy.exe .
-cd ../downloader
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o ../dist/ez-am-downloader.exe .
-```
-
-Verification used by this tree:
-
-```bash
-go vet ./...
-go test -count=1 ./...                # in deploy/ and downloader/
-bash tests/shell_regression_test.sh   # needs bash + python3 (run it in WSL)
-```
-
-## Configuration
-
-`setup.sh` writes a complete `config/config.yaml`. The keys that matter most:
-
-| Key | Purpose |
-| --- | --- |
-| `media-user-token` | Enables lyrics, artwork, AAC and music videos. |
-| `storefront` | Two-letter storefront (`us`, `jp`, `hk`, ...). |
-| `decrypt-m3u8-port` | `127.0.0.1:10020` — the wrapper's decrypt port. |
-| `exit-on-error` | `true`, so a failed download fails the run instead of hanging. |
-| `alac-max` / `atmos-max` / `aac-type` | Quality ceilings handed to the downloader. |
-| `*-save-folder` | Output directories inside the container (`/downloads/...`). |
+Runtime paths are resolved from the selected distribution and the real home
+directory; an existing `~/amd` deployment is detected and kept.
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `setup.sh not found; checked ...` from the wizard | `ez-am-deploy.exe` is not sitting inside the checkout. It only looks beside itself and one directory up — keep it in `dist/`, or place it next to `setup.sh`. |
-| SmartScreen blocks the download or the first run | The binaries are unsigned. Unblock the ZIP before extracting (right-click → Properties → *Unblock*), or choose *More info → Run anyway*. |
-| `docker build` stops with `the --mount option requires BuildKit` | The CLI has no buildx plugin. Install it (e.g. the `docker-buildx` package, or the `docker-buildx` binary into `~/.docker/cli-plugins/`). `setup.sh` reuses an existing `local/wrapper:latest`, so the build only matters on the first run or after an image change. |
-| `[!] The temporary authentication container exited before requesting 2FA.` | Usually the wrapper could not provision machine data. Check `docker logs amd-wrapper-auth` for `anisetteRequest status: -45061` / `auth error: code=-1703664312`. Confirm `~/amd/wrapper-data/data/com.apple.android.music/files/mpl_db` exists (current `login.sh` creates it automatically). |
-| Login asks for a code you did not request, or the code is rejected | The wrapper waits roughly 60 seconds; do **not** restart or re-create the container while it waits, or Apple invalidates the code. Repeated failures can trigger a 15–30 minute Apple cooldown. |
-| `[!] Persisted wrapper session is missing or empty` | `~/amd/wrapper-data` is empty or was cleared. Run `bash login.sh interactive` again. |
-| `[!] amd-wrapper-login is running but ports ... are not listening` | Look at `docker logs amd-wrapper-login`. Do not remove the container before capturing the log. |
-| `fetch failed` from a wrapper-side client | The container takes a moment to open its ports after a WSL restart; `bash login.sh status` is the authoritative check. |
-| Everything worked yesterday, nothing works today | `docker ps -a --filter name=amd-`: if the container is missing, restore it with `bash login.sh start`; never let a download start a replacement wrapper. |
+| `ez-am doctor` prints `NEEDS_RUNTIME` | Runtime files are missing under the reported base. Accept the offered install, or run `setup.sh` from the checkout. |
+| `NEEDS_AUTH` / wrapper not listening | No valid Apple session. Use the login action (2FA) — the code must be typed within ~60 seconds and the container must not be restarted while it waits. |
+| `DOCKER_UNAVAILABLE` | Start Docker Desktop, or `sudo service docker start` inside the distro, then re-run the doctor. |
+| BuildKit warning, image build fails with `the --mount option requires BuildKit` | Install the `docker buildx` plugin (package or binary in `~/.docker/cli-plugins/`). Only needed once. |
+| `auth error: code=-1703664312` right after starting a login | The wrapper could not provision machine data. Check that `<base>/data/com.apple.android.music/files` exists; `login.sh` creates it automatically. |
+| Docker is available in WSL but the app says otherwise | The daemon must answer **inside** the distro: `wsl -d <distro> --exec docker info`. |
+| Nothing works after a WSL restart | The wrapper takes a moment to publish its ports; re-run the doctor. Do not delete `wrapper-data`. |
 
 ## Security notes
 
-- `~/amd/.env` holds the Apple ID and password; `~/amd/config/config.yaml`
-  holds the media token. Keep them `0600` with a `0700` config directory —
-  `setup.sh` does this for you.
-- `.gitignore` excludes `.env`, `config/config.yaml`, `wrapper-data/`,
-  `downloads/`, `*.bak.*` and deployment logs. Do not weaken it.
+- `~/amd/.env` holds the Apple ID and password; `config/config.yaml` holds the
+  media token. Both stay `0600` inside a `0700` config directory.
+- The doctor never reads credential contents — only their existence.
+- Passwords and codes are never passed as shell source: they travel as separate
+  arguments, environment entries or stdin, depending on the step.
 - Never paste a password, media token, session database or 2FA code into an
-  issue, a chat or a build log. If one of them has ever been stored in
-  plaintext, rotate it.
+  issue, a chat or a build log. Rotate anything that has been stored in
+  plaintext.
 - `~/amd/wrapper-data` **is** the login state. Deleting it (or the container)
-  forces a new Apple authentication, including 2FA, and an empty directory tree
-  will break the login until the data skeleton exists again.
+  forces a new Apple authentication.
+
+## Build and verify
+
+```bash
+# Linux/WSL host, cross-compiling the single Windows binary
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -o dist/ez-am.exe ./cmd/ez-am
+
+go vet ./...
+go test -count=1 ./...
+bash tests/shell_regression_test.sh   # needs bash + python3 (run it in WSL)
+```
+
+The committed `dist/ez-am.exe` is built from this tree with those flags.
 
 ## Upstream and licensing
 

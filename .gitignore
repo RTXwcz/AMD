@@ -24,6 +24,7 @@ downloader/downloader
 # ...except the two prebuilt Windows front ends that ship with the checkout
 !dist/ez-am-deploy.exe
 !dist/ez-am-downloader.exe
+!dist/ez-am.exe
 
 # OS / editor
 .DS_Store
