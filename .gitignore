@@ -21,6 +21,9 @@ wrapper-bin/
 deploy/deploy
 downloader/downloader
 *.exe
+# ...except the two prebuilt Windows front ends that ship with the checkout
+!dist/ez-am-deploy.exe
+!dist/ez-am-downloader.exe
 
 # OS / editor
 .DS_Store
