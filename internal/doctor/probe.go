@@ -58,27 +58,55 @@ else
   printf '\036credentials=0'
 fi
 
-server="$(docker info --format '{{.ServerVersion}}' 2>/dev/null || true)"
-printf '\036docker=%s' "$server"
-if [ -z "$server" ]; then
-  printf '\036docker_error=%s' "$(docker info 2>&1 >/dev/null | head -n 1 || true)"
+server=""
+work="$(mktemp -d 2>/dev/null || true)"
+if [ -n "$work" ]; then
+  trap 'rm -rf "$work"' EXIT
+else
+  work="/tmp"
 fi
 
-printf '\036buildx=%s' "$(docker buildx version 2>/dev/null | head -n 1 || true)"
+# The four slow facts are independent; asking Docker and the wrapper at the
+# same time costs one round trip instead of four.
+docker info --format '{{.ServerVersion}}' >"$work/docker" 2>"$work/docker_error" &
+docker_pid=$!
+docker buildx version >"$work/buildx" 2>/dev/null &
+buildx_pid=$!
+docker images --format '{{.Repository}}:{{.Tag}}' >"$work/images" 2>/dev/null &
+images_pid=$!
+bash "$base/login.sh" status >"$work/wrapper" 2>&1 &
+wrapper_pid=$!
 
-docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | while IFS= read -r image; do
+wait "$docker_pid" 2>/dev/null || true
+wait "$buildx_pid" 2>/dev/null || true
+wait "$images_pid" 2>/dev/null || true
+wait "$wrapper_pid" 2>/dev/null
+wrapper_status=$?
+
+server="$(head -n 1 "$work/docker" 2>/dev/null || true)"
+printf '\036docker=%s' "$server"
+if [ -z "$server" ]; then
+  printf '\036docker_error=%s' "$(head -n 1 "$work/docker_error" 2>/dev/null || true)"
+fi
+
+printf '\036buildx=%s' "$(head -n 1 "$work/buildx" 2>/dev/null || true)"
+
+while IFS= read -r image; do
   if [ -n "$image" ]; then
     printf '\036image=%s' "$image"
   fi
-done
+done <"$work/images"
 
-wrapper_output="$(bash "$base/login.sh" status 2>&1)"
-wrapper_status=$?
+wrapper_output="$(cat "$work/wrapper" 2>/dev/null || true)"
 if [ "$wrapper_status" -eq 0 ]; then
   printf '\036wrapper=1'
 else
   printf '\036wrapper=0'
-  printf '\036wrapper_detail=%s' "$(printf '%s\n' "$wrapper_output" | grep -m1 '^\[!\]' || true)"
+  detail="$(printf '%s\n' "$wrapper_output" | grep -m1 '^\[!\]' || true)"
+  if [ -z "$detail" ]; then
+    detail="$(printf '%s\n' "$wrapper_output" | grep -m1 . || true)"
+  fi
+  printf '\036wrapper_detail=%s' "$detail"
 fi
 
 if [ -d "$base/downloads" ] && [ -w "$base/downloads" ]; then

@@ -2,6 +2,11 @@
 // ez-am application: WSL, distribution selection, Docker, runtime files,
 // credentials, images and wrapper health. It never installs, starts, repairs,
 // logs in or deletes anything.
+//
+// The consolidated probe keeps its concurrent answers in a transient scratch
+// directory inside the distribution and removes it again; nothing outside that
+// scratch directory is written, and credential files are only tested for
+// existence.
 package doctor
 
 import (
