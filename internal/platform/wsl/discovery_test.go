@@ -267,8 +267,8 @@ func TestProbeDistributionUsesFixedScriptAndSeparateDistributionArgument(t *test
 		t.Fatalf("request.Name = %q, want wsl.exe", request.Name)
 	}
 	if len(request.Args) != 6 || request.Args[0] != "-d" || request.Args[1] != name ||
-		request.Args[2] != "--" || request.Args[3] != "sh" || request.Args[4] != "-c" {
-		t.Fatalf("request.Args = %#v, want wsl.exe -d <name> -- sh -c <script>", request.Args)
+		request.Args[2] != "--exec" || request.Args[3] != "bash" || request.Args[4] != "-lc" {
+		t.Fatalf("request.Args = %#v, want wsl.exe -d <name> --exec bash -lc <script>", request.Args)
 	}
 	for i, arg := range request.Args {
 		if i != 1 && arg == name {

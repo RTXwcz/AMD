@@ -94,7 +94,7 @@ func ProbeDistribution(ctx context.Context, run platform.CommandRunner, name str
 
 	result, err := run.Run(ctx, platform.CommandRequest{
 		Name: "wsl.exe",
-		Args: []string{"-d", name, "--", "sh", "-c", distributionProbeScript},
+		Args: []string{"-d", name, "--exec", "bash", "-lc", distributionProbeScript},
 	})
 	if err != nil {
 		return platform.Distribution{}, fmt.Errorf("probe WSL distribution %q: %w", name, err)

@@ -16,3 +16,9 @@ func Run() int {
 	}
 	return programExitCode(final, err)
 }
+
+// RunWithTarget starts the media UI against an explicit runtime target: the
+// selected WSL distribution and the runtime base that holds dl.sh.
+func RunWithTarget(distribution, base string) int {
+	return runWithTarget(Target{Distribution: distribution, Base: base})
+}

@@ -32,6 +32,23 @@ var (
 	promptStyle = lipgloss.NewStyle().Foreground(primary)
 )
 
+// Target identifies the WSL runtime the media engine drives. The zero value
+// keeps the historical defaults: the EZ_WSL_DISTRO override or "Ubuntu", and
+// the legacy $HOME/amd base.
+type Target struct {
+	Distribution string
+	Base         string
+}
+
+// target is set once by RunWithTarget before the UI starts. Command builders
+// read it through wslDistro and downloadShellSource.
+var target Target
+
+func runWithTarget(t Target) int {
+	target = t
+	return Run()
+}
+
 type stage int
 
 const (
@@ -550,7 +567,7 @@ func newDownloadCommandContextWithContainerTracks(ctx context.Context, url, prof
 	if !validDownloadContainerName(name) {
 		return nil, fmt.Errorf("invalid downloader container name")
 	}
-	args := wslScriptArgs(wslDistro(), downloadScriptShell, "ez-am-downloader", url, profile)
+	args := wslScriptArgs(wslDistro(), downloadShellSource(), "ez-am-downloader", url, profile)
 	args = append(args, trackIDs...)
 	cmd := exec.CommandContext(ctx, "wsl.exe", args...)
 	cmd.WaitDelay = downloadCommandWaitDelay
@@ -716,10 +733,58 @@ func wslScriptArgs(distro, shellSource, argv0 string, args ...string) []string {
 }
 
 func wslDistro() string {
+	if distro := strings.TrimSpace(target.Distribution); distro != "" {
+		return distro
+	}
 	if distro := strings.TrimSpace(os.Getenv("EZ_WSL_DISTRO")); distro != "" {
 		return distro
 	}
 	return "Ubuntu"
+}
+
+// validRuntimeBase accepts only an absolute Linux path made of characters that
+// are safe to embed in a fixed shell script. Anything else falls back to the
+// legacy $HOME/amd contract.
+func validRuntimeBase(base string) bool {
+	if len(base) < 2 || base[0] != '/' {
+		return false
+	}
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '/', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return !strings.Contains(base, "..")
+}
+
+func downloadShellSource() string {
+	if base := strings.TrimSpace(target.Base); validRuntimeBase(base) {
+		return `exec "` + base + `/dl.sh" "$@"`
+	}
+	return downloadScriptShell
+}
+
+// windowsDownloadsPath renders the Windows-visible location of the downloads
+// directory for the active runtime.
+func windowsDownloadsPath() string {
+	base := strings.TrimSpace(target.Base)
+	if !validRuntimeBase(base) {
+		return fmt.Sprintf(`\\wsl$\%s\home\<user>\amd\downloads`, wslDistro())
+	}
+	unixPath := strings.TrimSuffix(base, "/") + "/downloads"
+	return `\\wsl$\` + wslDistro() + `\` + strings.ReplaceAll(strings.TrimPrefix(unixPath, "/"), "/", `\`)
+}
+
+// unixDownloadsPath renders the Linux-side downloads directory.
+func unixDownloadsPath() string {
+	base := strings.TrimSpace(target.Base)
+	if !validRuntimeBase(base) {
+		return "$HOME/amd/downloads"
+	}
+	return strings.TrimSuffix(base, "/") + "/downloads"
 }
 
 func programExitCode(final tea.Model, runErr error) int {
@@ -796,7 +861,7 @@ func (m model) legacyView() string {
 		}
 		return panelStyle.Render(
 			okStyle.Render("✓ Download complete!") + "\n\n" +
-				hintStyle.Render(fmt.Sprintf("Files in: \\\\wsl$\\%s\\home\\<user>\\amd\\downloads", wslDistro())) + "\n\n" +
+				hintStyle.Render("Files in: "+windowsDownloadsPath()) + "\n\n" +
 				promptStyle.Render("Press CTRL+C to exit"),
 		)
 	}
@@ -861,8 +926,8 @@ func (m model) View() string {
 		}
 		return panelStyle.Render(
 			okStyle.Render("✓ 下载完成") + "\n\n" +
-				hintStyle.Render("文件位置：/home/rtxwcz/amd/downloads") + "\n" +
-				hintStyle.Render(fmt.Sprintf("Windows：\\\\wsl$\\%s\\home\\rtxwcz\\amd\\downloads", wslDistro())) + "\n\n" +
+				hintStyle.Render("文件位置："+unixDownloadsPath()) + "\n" +
+				hintStyle.Render("Windows："+windowsDownloadsPath()) + "\n\n" +
 				promptStyle.Render("ENTER 或 CTRL+C 退出"),
 		)
 	}
