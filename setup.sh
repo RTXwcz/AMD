@@ -7,11 +7,11 @@ umask 077
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 AMD_BASE="${AMD_BASE:-${BASE:-$HOME/amd}}"
 BASE="$AMD_BASE"
-WRAPPER_DIR="$BASE/wrapper-bin"
-DATA_DIR="$BASE/wrapper-data"
-DL_DIR="$BASE/downloads"
-CFG_DIR="$BASE/config"
-ENV_FILE="$BASE/.env"
+CFG_DIR="${EZ_AM_CONFIG_DIR:-$BASE/config}"
+WRAPPER_DIR="${EZ_AM_CACHE_DIR:-$BASE/wrapper-bin}"
+DATA_DIR="${EZ_AM_STATE_DIR:-$BASE/wrapper-data}"
+DL_DIR="${EZ_AM_DOWNLOADS_DIR:-$BASE/downloads}"
+ENV_FILE="$CFG_DIR/.env"
 CFG_FILE="$CFG_DIR/config.yaml"
 WRAPPER_IMAGE="${WRAPPER_IMAGE:-local/wrapper:latest}"
 DOWNLOADER_IMAGE="${DOWNLOADER_IMAGE:-ghcr.io/zhaarey/apple-music-downloader@sha256:16045b4d1c05fca312d301c3e9dc82e70fcb45ea723fe6df71258364a3cb7e4d}"
@@ -44,34 +44,19 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
-for runtime_file in dl.sh login.sh compose.yaml; do
-  if [ ! -f "$SCRIPT_DIR/$runtime_file" ]; then
-    echo "[!] Missing canonical runtime file: $SCRIPT_DIR/$runtime_file" >&2
-    exit 1
-  fi
-done
-
 mkdir -p "$BASE" "$WRAPPER_DIR" "$DATA_DIR" "$DL_DIR" "$CFG_DIR"
 chmod 700 "$CFG_DIR"
 
-install_runtime_file() {
-  local name="$1"
-  local mode="$2"
-  local source="$SCRIPT_DIR/$name"
-  local destination="$BASE/$name"
-
-  if [ -e "$destination" ] && [ "$source" -ef "$destination" ]; then
-    chmod "$mode" "$destination"
-    return
-  fi
-
-  cp -- "$source" "$destination"
-  chmod "$mode" "$destination"
-}
-
-install_runtime_file "dl.sh" 0755
-install_runtime_file "login.sh" 0755
-install_runtime_file "compose.yaml" 0644
+# Pre-unified installations kept credentials at the data root.  Move that
+# secret into the explicit config directory before the normal backup/write
+# path, then keep exactly one authoritative location.
+LEGACY_ENV_FILE="$BASE/.env"
+if [ "$ENV_FILE" != "$LEGACY_ENV_FILE" ] && [ ! -e "$ENV_FILE" ] && [ -f "$LEGACY_ENV_FILE" ]; then
+  cp -p -- "$LEGACY_ENV_FILE" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  rm -f -- "$LEGACY_ENV_FILE"
+  echo "==> Migrated legacy credentials into the config directory"
+fi
 
 echo "==> Pulling pinned downloader image"
 docker pull "$DOWNLOADER_IMAGE"
@@ -173,7 +158,7 @@ backup_existing() {
 backup_existing "$ENV_FILE"
 backup_existing "$CFG_FILE"
 
-ENV_TMP="$BASE/.env.tmp.$$"
+ENV_TMP="$CFG_DIR/.env.tmp.$$"
 CFG_TMP="$CFG_DIR/config.yaml.tmp.$$"
 cleanup_secret_temps() {
   rm -f -- "$ENV_TMP" "$CFG_TMP"
@@ -240,5 +225,5 @@ trap - EXIT
 echo
 echo "=== SETUP COMPLETE ==="
 echo "Runtime: $BASE"
-echo "Next: bash \"$BASE/login.sh\""
+echo "Next: bash \"$SCRIPT_DIR/login.sh\""
 echo "Downloads and wrapper session data were preserved."

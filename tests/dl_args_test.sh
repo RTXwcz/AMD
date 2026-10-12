@@ -11,14 +11,15 @@ fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 RUNTIME="$SANDBOX/runtime"
 BIN="$SANDBOX/bin"
-mkdir -p "$RUNTIME/config" "$RUNTIME/downloads" "$BIN"
+mkdir -p "$RUNTIME/current" "$RUNTIME/config" "$RUNTIME/downloads" "$BIN"
 : > "$RUNTIME/config/config.yaml"
 
-cat > "$RUNTIME/login.sh" <<'EOF'
+cp "$ROOT/dl.sh" "$RUNTIME/current/dl.sh"
+cat > "$RUNTIME/current/login.sh" <<'EOF'
 #!/usr/bin/env bash
 [ "${1:-}" = status ]
 EOF
-chmod +x "$RUNTIME/login.sh"
+chmod +x "$RUNTIME/current/dl.sh" "$RUNTIME/current/login.sh"
 
 cat > "$BIN/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -40,7 +41,7 @@ run_download() {
   shift 2
   AMD_BASE="$RUNTIME" PATH="$BIN:$PATH" DOCKER_ARGV_LOG="$argv_file" \
     EZ_DOWNLOAD_CONTAINER="amd-downloader-args-test" \
-    bash "$ROOT/dl.sh" "$@" >"$output_file" 2>&1
+    bash "$RUNTIME/current/dl.sh" "$@" >"$output_file" 2>&1
 }
 
 all_args_present() {

@@ -4,20 +4,73 @@
 
 **Goal:** Produce the first unified `ez-am.exe` that runs without adjacent files or `D:\amd`, discovers and selects a supported WSL distribution and its real user home, installs embedded runtime assets, classifies Docker/runtime health, and enters the existing album/quality/download workflow.
 
-**Architecture:** Evolve the tested `downloader` Go module into the single application while keeping the old deploy module as a non-runtime migration reference. Add platform, runtime, and control packages with injected command runners; wrap the existing media TUI behind a supervisor state machine. Embed compatibility scripts inside the Go module, install them into the selected user's XDG data directory, and pass the selected distro/base explicitly to every WSL command.
+**Architecture:** Create a root Go module with the only product entry at `cmd/ez-am`. Snapshot the tested downloader into `internal/media` and keep the old nested downloader module unchanged as a regression oracle until cutover. Add platform, runtime, and control packages with injected command runners; wrap media behind a supervisor state machine. Embed compatibility scripts inside the root module, install them into the selected user's XDG data directory, and pass the selected distro/base explicitly to every WSL command.
 
 **Tech Stack:** Go 1.22+, Bubble Tea, `embed`, `os/exec`, Bash compatibility assets, WSL2, Docker, existing downloader catalog/selection/streaming code.
 
 ---
 
-### Task 1: WSL output decoding and distribution inventory
+### Task 1: Root module and media compatibility snapshot
 
 **Files:**
-- Create: `downloader/platform_types.go`
-- Create: `downloader/wsl_discovery.go`
-- Create: `downloader/wsl_discovery_test.go`
+- Create: `go.mod`
+- Create: `go.sum`
+- Create: `cmd/ez-am/main.go`
+- Create: `internal/media/catalog.go`
+- Create: `internal/media/catalog_test.go`
+- Create: `internal/media/catalog_integration_test.go`
+- Create: `internal/media/selection.go`
+- Create: `internal/media/stream.go`
+- Create: `internal/media/model.go`
+- Create: `internal/media/run.go`
+- Create: `internal/media/feature_test.go`
+- Create: `internal/media/model_test.go`
 
-- [ ] **Step 1: Write failing parser and policy tests**
+- [x] **Step 1: Create the root module and copy tests first**
+
+Use module name `ez-am`, retain the current Bubble Tea dependency versions, and
+copy the four downloader test files into `internal/media` with package name
+`media`. Change only the relative shell fixture path from `../dl.sh` to
+`../../dl.sh`.
+
+- [x] **Step 2: Run root tests and verify RED**
+
+Run:
+
+```bash
+cd /mnt/d/amd/.worktrees/unified-ez-am
+go test ./...
+```
+
+Expected: build failure because the media production types and functions have
+not been copied yet.
+
+- [x] **Step 3: Copy the tested media implementation**
+
+Copy the four production files into `internal/media`, change only the package
+name, rename `main.go` to `model.go`, and move process startup into:
+
+```go
+func Run() int
+```
+
+The only `os.Exit` call belongs in `cmd/ez-am/main.go`. Preserve the existing
+`tea.NewProgram(initialModel())` behavior, runID/jobIndex stale-event checks,
+and the complete two-phase cancellation path.
+
+- [x] **Step 4: Verify old and new media implementations**
+
+Run root tests, root race tests and vet, then run the unchanged nested
+`downloader` tests, race tests and vet. Cross-build `cmd/ez-am` for Windows.
+
+### Task 2: WSL output decoding and distribution inventory
+
+**Files:**
+- Create: `internal/platform/types.go`
+- Create: `internal/platform/wsl/discovery.go`
+- Create: `internal/platform/wsl/discovery_test.go`
+
+- [x] **Step 1: Write failing parser and policy tests**
 
 Define tests for UTF-16LE and UTF-8 `wsl --list --quiet` output, CR/NUL removal,
 exclusion of `docker-desktop` variants, zero/one/multiple user distributions,
@@ -34,38 +87,42 @@ type Distribution struct {
     LegacyBase bool
 }
 
-func DecodeConsoleOutput(raw []byte) string
-func ParseDistributionNames(raw []byte) []string
-func SelectableDistributions(items []Distribution) []Distribution
+func DecodeConsoleOutput(raw []byte) (string, error)
+func ParseDistributionNames(raw []byte) ([]platform.Distribution, error)
+func SelectableDistributions(items []platform.Distribution) []platform.Distribution
+func Decide(items []platform.Distribution) Selection
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
 ```bash
-cd /mnt/d/amd/downloader
+cd /mnt/d/amd/.worktrees/unified-ez-am
 go test ./... -run 'TestDecodeConsoleOutput|TestParseDistributionNames|TestSelectableDistributions'
 ```
 
 Expected: build failure because the types/functions do not exist.
 
-- [ ] **Step 3: Implement the minimal decoder and inventory policy**
+- [x] **Step 3: Implement the minimal decoder and inventory policy**
 
-Decode BOM-marked or NUL-heavy UTF-16LE without depending on localized labels.
-Reject empty/control-character names. Preserve discovery order and remove only
-the exact system distributions.
+Decode BOM-marked or NUL-heavy UTF-16LE before testing UTF-8, without depending
+on localized labels. Reject odd UTF-16 byte counts, invalid surrogate pairs,
+empty/control-character names, path separators, and case-insensitive duplicates.
+Preserve discovery order and remove only the exact system distributions.
+`Decide` returns provision-Ubuntu for zero choices, selects the only choice, and
+requires explicit user choice for two or more distributions.
 
-- [ ] **Step 4: Run focused and full tests**
+- [x] **Step 4: Run focused and full tests**
 
 Expected: focused tests and `go test ./...` pass.
 
-### Task 2: Safe distribution probing and dynamic home discovery
+### Task 3: Safe distribution probing and dynamic home discovery
 
 **Files:**
-- Modify: `downloader/platform_types.go`
-- Modify: `downloader/wsl_discovery.go`
-- Modify: `downloader/wsl_discovery_test.go`
+- Modify: `internal/platform/types.go`
+- Modify: `internal/platform/wsl/discovery.go`
+- Modify: `internal/platform/wsl/discovery_test.go`
 
 - [ ] **Step 1: Write failing runner-contract tests**
 
@@ -116,15 +173,15 @@ reject an unintended root default user with an actionable typed error.
 
 Run focused tests, full Go tests, race tests, and `go vet`.
 
-### Task 3: Embedded runtime manifest and atomic installer
+### Task 4: Embedded runtime manifest and atomic installer
 
 **Files:**
-- Create: `downloader/runtime_assets.go`
-- Create: `downloader/runtime_assets_test.go`
-- Create: `downloader/runtime/setup.sh`
-- Create: `downloader/runtime/login.sh`
-- Create: `downloader/runtime/dl.sh`
-- Create: `downloader/runtime/compose.yaml`
+- Create: `internal/runtime/assets.go`
+- Create: `internal/runtime/assets_test.go`
+- Create: `internal/runtime/assets/setup.sh`
+- Create: `internal/runtime/assets/login.sh`
+- Create: `internal/runtime/assets/dl.sh`
+- Create: `internal/runtime/assets/compose.yaml`
 
 - [ ] **Step 1: Write failing embed and install-plan tests**
 
@@ -158,12 +215,12 @@ interpolation.
 Run asset tests, all downloader tests, and the shell regression suite against
 the embedded canonical copies.
 
-### Task 4: Structured doctor and Docker backend classification
+### Task 5: Structured doctor and Docker backend classification
 
 **Files:**
-- Create: `downloader/doctor.go`
-- Create: `downloader/doctor_test.go`
-- Modify: `downloader/platform_types.go`
+- Create: `internal/control/doctor.go`
+- Create: `internal/control/doctor_test.go`
+- Modify: `internal/platform/types.go`
 
 - [ ] **Step 1: Write failing health matrix tests**
 
@@ -204,12 +261,12 @@ probe results and returns one stable report with bounded redacted diagnostics.
 
 Run focused, full, race, and vet checks.
 
-### Task 5: Supervisor TUI and explicit multi-distro selection
+### Task 6: Supervisor TUI and explicit multi-distro selection
 
 **Files:**
-- Create: `downloader/supervisor.go`
-- Create: `downloader/supervisor_test.go`
-- Modify: `downloader/main.go`
+- Create: `internal/app/supervisor.go`
+- Create: `internal/app/supervisor_test.go`
+- Modify: `cmd/ez-am/main.go`
 
 - [ ] **Step 1: Write failing state-transition tests**
 
@@ -231,12 +288,12 @@ commands; it does not mutate process-global environment as hidden state.
 
 Run model tests at narrow and standard terminal sizes, then all Go tests.
 
-### Task 6: Parameterize media WSL commands and preserve cancellation
+### Task 7: Parameterize media WSL commands and preserve cancellation
 
 **Files:**
-- Modify: `downloader/main.go`
-- Modify: `downloader/main_test.go`
-- Modify: `downloader/stream.go`
+- Modify: `internal/media/model.go`
+- Modify: `internal/media/model_test.go`
+- Modify: `internal/media/stream.go`
 
 - [ ] **Step 1: Write failing command-construction tests**
 
@@ -266,12 +323,12 @@ paths. Preserve streaming, bounded logs, grouped jobs, and Ctrl+C synchronizatio
 
 Run full Go tests, race tests, vet, and shell regressions.
 
-### Task 7: Safe automatic wrapper recovery
+### Task 8: Safe automatic wrapper recovery
 
 **Files:**
-- Create: `downloader/repair.go`
-- Create: `downloader/repair_test.go`
-- Modify: `downloader/runtime/login.sh`
+- Create: `internal/control/repair.go`
+- Create: `internal/control/repair_test.go`
+- Modify: `internal/runtime/assets/login.sh`
 
 - [ ] **Step 1: Write failing repair-budget tests**
 
@@ -292,10 +349,10 @@ wrapper mutation and return structured next states instead of parsing stderr.
 
 Run unit, race, and shell integration tests.
 
-### Task 8: Single executable build and independence verification
+### Task 9: Single executable build and independence verification
 
 **Files:**
-- Modify: `downloader/go.mod` only if the module name or dependencies change
+- Modify: `go.mod` only if dependencies change
 - Modify: `README.md`
 - Build: `dist/ez-am.exe`
 
@@ -315,8 +372,8 @@ Run artifact tests before the unified binary exists.
 Run:
 
 ```bash
-cd /mnt/d/amd/downloader
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -o ../dist/ez-am.exe .
+cd /mnt/d/amd/.worktrees/unified-ez-am
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -o dist/ez-am.exe ./cmd/ez-am
 ```
 
 - [ ] **Step 4: Verify from an unrelated directory**

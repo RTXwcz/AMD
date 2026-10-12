@@ -137,10 +137,12 @@ else
   target_urls+=("$URL")
 fi
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 AMD_BASE="${AMD_BASE:-$HOME/amd}"
-LOGIN_SCRIPT="$AMD_BASE/login.sh"
-DOWNLOAD_DIR="$AMD_BASE/downloads"
-CONFIG_FILE="$AMD_BASE/config/config.yaml"
+LOGIN_SCRIPT="$SCRIPT_DIR/login.sh"
+DOWNLOAD_DIR="${EZ_AM_DOWNLOADS_DIR:-$AMD_BASE/downloads}"
+CONFIG_DIR="${EZ_AM_CONFIG_DIR:-$AMD_BASE/config}"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
 LOGIN_CONTAINER="amd-wrapper-login"
 DOWNLOADER_IMAGE="${DOWNLOADER_IMAGE:-ghcr.io/zhaarey/apple-music-downloader@sha256:16045b4d1c05fca312d301c3e9dc82e70fcb45ea723fe6df71258364a3cb7e4d}"
 DOWNLOAD_CONTAINER="${EZ_DOWNLOAD_CONTAINER:-amd-downloader-$$}"
@@ -184,7 +186,11 @@ cleanup_download() {
 }
 
 handle_download_signal() {
-  exit 130
+  case "$1" in
+    HUP) exit 129 ;;
+    INT) exit 130 ;;
+    TERM) exit 143 ;;
+  esac
 }
 
 redact_downloader_output() {
@@ -195,7 +201,9 @@ redact_downloader_output() {
 }
 
 trap cleanup_download EXIT
-trap handle_download_signal INT TERM HUP
+trap 'handle_download_signal HUP' HUP
+trap 'handle_download_signal INT' INT
+trap 'handle_download_signal TERM' TERM
 
 echo "[stage] container"
 echo "[*] profile: $PROFILE  format: $FORMAT  targets: ${#target_urls[@]}"

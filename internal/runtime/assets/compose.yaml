@@ -1,0 +1,14 @@
+services:
+  wrapper:
+    image: local/wrapper:latest
+    container_name: amd-wrapper-login
+    command: ["/app/wrapper", "-H", "0.0.0.0"]
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      - ${EZ_AM_STATE_DIR:-./wrapper-data}:/app/rootfs/data
+      - ${EZ_AM_CONFIG_DIR:-./config}/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:10020:10020"
+      - "127.0.0.1:20020:20020"
+      - "127.0.0.1:30020:30020"
