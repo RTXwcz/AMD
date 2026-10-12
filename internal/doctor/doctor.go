@@ -12,7 +12,6 @@ import (
 
 	"ez-am/internal/platform"
 	"ez-am/internal/platform/wsl"
-	"ez-am/internal/runtime"
 )
 
 // Code is the single stable outcome of a diagnosis.
@@ -146,33 +145,33 @@ func diagnose(ctx context.Context, in Inputs) Report {
 	}
 	report.Distro = distro
 
-	distribution, probeErr := wsl.ProbeDistribution(ctx, in.Runner, distro)
+	probed, probeErr := probeFacts(ctx, in, distro, in.Base)
 	if probeErr != nil {
 		report.add(Check{
 			ID: "distro", Title: "Distribution", Status: StatusFail,
-			Detail: sanitize(probeErr.Error()),
+			Detail: "the distribution probe failed: " + sanitize(probeErr.Error()),
 		})
 		return report
 	}
-	report.Distribution = distribution
-
-	base, legacy, baseCheck := resolveBase(ctx, in, distro, distribution)
-	if baseCheck != nil {
-		report.add(*baseCheck)
-		return report
+	report.Base = probed.base
+	report.Distribution = platform.Distribution{
+		Name:         distro,
+		Family:       platform.Family(wsl.ClassifyFamily(probed.osID, strings.Fields(probed.osIDLike))),
+		Version:      probed.osVersion,
+		User:         probed.user,
+		Home:         probed.home,
+		Architecture: probed.architecture,
+		LegacyBase:   probed.legacy,
 	}
-	report.Base = base
-	report.Distribution.LegacyBase = legacy
 
-	report.add(checkDocker(ctx, in, distro))
-	report.add(checkBuildx(ctx, in, distro))
-	report.add(checkRuntimeFiles(ctx, in, distro, base))
-	report.add(checkConfig(ctx, in, distro, base))
-
-	layout := layoutFor(distribution.Home, legacy, base)
-	report.add(checkImages(ctx, in, distro))
-	report.add(checkWrapper(ctx, in, distro, base))
-	report.add(checkDownloads(ctx, in, distro, layout.Downloads))
+	// Drop the inventory row: the probe replaces it with one that also carries
+	// the family and the default-user check.
+	if last := len(report.Checks) - 1; last >= 0 && report.Checks[last].ID == "distro" {
+		report.Checks = report.Checks[:last]
+	}
+	for _, check := range rows(probed) {
+		report.add(check)
+	}
 	return report
 }
 
@@ -308,221 +307,6 @@ func containsDistribution(items []platform.Distribution, name string) bool {
 	}
 	return false
 }
-
-func resolveBase(ctx context.Context, in Inputs, distro string, distribution platform.Distribution) (string, bool, *Check) {
-	if explicit := strings.TrimSpace(in.Base); explicit != "" {
-		return strings.TrimSuffix(explicit, "/"), false, nil
-	}
-	result, err := runScript(ctx, in, distro, legacyProbeScript)
-	if err == nil && result.Code == 0 {
-		if legacy := strings.TrimSpace(string(result.Stdout)); legacy != "" {
-			return strings.TrimSuffix(legacy, "/"), true, nil
-		}
-	}
-	if strings.TrimSpace(distribution.Home) == "" {
-		check := Check{
-			ID: "runtime", Title: "Runtime files", Status: StatusFail,
-			Detail: "the distribution home directory could not be discovered",
-		}
-		return "", false, &check
-	}
-	layout := runtime.ResolveRuntimeLayout(distribution.Home, runtime.XDGDirs{}, false)
-	return strings.TrimSuffix(layout.Base, "/"), false, nil
-}
-
-func layoutFor(home string, legacy bool, base string) runtime.RuntimeLayout {
-	layout := runtime.ResolveRuntimeLayout(home, runtime.XDGDirs{}, legacy)
-	if strings.TrimSpace(base) != "" {
-		layout.Base = base
-	}
-	return layout
-}
-
-func checkDocker(ctx context.Context, in Inputs, distro string) Check {
-	const id, title = "docker", "Docker"
-	result, err := in.Runner.Run(ctx, platform.CommandRequest{
-		Name: "wsl.exe",
-		Args: []string{"-d", distro, "--exec", "docker", "info", "--format", "{{.ServerVersion}}"},
-	})
-	if err != nil {
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionStartDocker, Detail: sanitize(err.Error())}
-	}
-	if result.Code != 0 {
-		detail := firstLine(string(result.Stderr))
-		if detail == "" {
-			detail = fmt.Sprintf("docker info exited with code %d", result.Code)
-		}
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionStartDocker, Detail: detail}
-	}
-	version := firstLine(string(result.Stdout))
-	if version == "" {
-		version = "reachable"
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "server " + version}
-}
-
-func checkBuildx(ctx context.Context, in Inputs, distro string) Check {
-	const id, title = "buildx", "BuildKit"
-	result, err := in.Runner.Run(ctx, platform.CommandRequest{
-		Name: "wsl.exe",
-		Args: []string{"-d", distro, "--exec", "docker", "buildx", "version"},
-	})
-	if err != nil || result.Code != 0 {
-		return Check{
-			ID: id, Title: title, Status: StatusWarn, Action: ActionInstallBuildx,
-			Detail: "docker buildx is missing; needed once to build the wrapper image",
-		}
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: firstLine(string(result.Stdout))}
-}
-
-func checkRuntimeFiles(ctx context.Context, in Inputs, distro, base string) Check {
-	const id, title = "runtime", "Runtime files"
-	result, err := runScript(ctx, in, distro, runtimeProbeScript, base)
-	if err != nil {
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionInstallRuntime, Detail: sanitize(err.Error())}
-	}
-	output := strings.TrimSpace(string(result.Stdout))
-	if strings.HasPrefix(output, "missing=") {
-		if missing := strings.TrimSpace(strings.TrimPrefix(output, "missing=")); missing != "" {
-			return Check{
-				ID: id, Title: title, Status: StatusFail, Action: ActionInstallRuntime,
-				Detail: "missing under " + base + ": " + missing,
-			}
-		}
-	}
-	if result.Code != 0 {
-		detail := firstLine(output)
-		if detail == "" {
-			detail = firstLine(string(result.Stderr))
-		}
-		if detail == "" {
-			detail = "the runtime directory could not be inspected"
-		}
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionInstallRuntime, Detail: detail}
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "installed under " + base}
-}
-
-func checkConfig(ctx context.Context, in Inputs, distro, base string) Check {
-	const id, title = "config", "Credentials"
-	result, err := runScript(ctx, in, distro, configProbeScript, base)
-	if err != nil {
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionCollectCreds, Detail: sanitize(err.Error())}
-	}
-	if result.Code != 0 {
-		return Check{
-			ID: id, Title: title, Status: StatusFail, Action: ActionCollectCreds,
-			Detail: "the Apple account and media token are not configured yet",
-		}
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "account and media token are stored"}
-}
-
-func checkImages(ctx context.Context, in Inputs, distro string) Check {
-	const id, title = "images", "Images"
-	result, err := in.Runner.Run(ctx, platform.CommandRequest{
-		Name: "wsl.exe",
-		Args: []string{"-d", distro, "--exec", "docker", "images", "--format", "{{.Repository}}:{{.Tag}}"},
-	})
-	if err != nil || result.Code != 0 {
-		return Check{ID: id, Title: title, Status: StatusWarn, Detail: "the local image list could not be read"}
-	}
-	list := string(result.Stdout)
-	var missing []string
-	if !strings.Contains(list, "ghcr.io/zhaarey/apple-music-downloader") {
-		missing = append(missing, "downloader")
-	}
-	if !strings.Contains(list, "local/wrapper") {
-		missing = append(missing, "wrapper")
-	}
-	if len(missing) > 0 {
-		return Check{
-			ID: id, Title: title, Status: StatusWarn,
-			Detail: "not pulled yet: " + strings.Join(missing, ", ") + " (setup.sh fetches them)",
-		}
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: "downloader and wrapper images are present"}
-}
-
-func checkWrapper(ctx context.Context, in Inputs, distro, base string) Check {
-	const id, title = "wrapper", "Wrapper session"
-	result, err := in.Runner.Run(ctx, platform.CommandRequest{
-		Name: "wsl.exe",
-		Args: []string{"-d", distro, "--exec", "bash", base + "/login.sh", "status"},
-	})
-	if err != nil {
-		return Check{ID: id, Title: title, Status: StatusFail, Action: ActionLogin, Detail: sanitize(err.Error())}
-	}
-	output := strings.TrimSpace(string(result.Stdout) + "\n" + string(result.Stderr))
-	if result.Code == 0 {
-		return Check{ID: id, Title: title, Status: StatusOK, Detail: "listening on 10020/20020/30020"}
-	}
-	if strings.Contains(output, "amd-wrapper-auth") || strings.Contains(output, "Authentication started") {
-		return Check{
-			ID: id, Title: title, Status: StatusFail, Action: ActionLogin,
-			Detail: "an authentication request is already waiting for a code",
-		}
-	}
-	return Check{ID: id, Title: title, Status: StatusFail, Action: ActionLogin, Detail: wrapperDetail(output)}
-}
-
-func wrapperDetail(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[!]") {
-			return sanitize(strings.TrimSpace(strings.TrimPrefix(trimmed, "[!]")))
-		}
-	}
-	if detail := firstLine(output); detail != "" {
-		return detail
-	}
-	return "the wrapper is not healthy"
-}
-
-func checkDownloads(ctx context.Context, in Inputs, distro, downloads string) Check {
-	const id, title = "downloads", "Output directory"
-	if strings.TrimSpace(downloads) == "" {
-		return Check{ID: id, Title: title, Status: StatusWarn, Detail: "the output directory could not be resolved"}
-	}
-	result, err := runScript(ctx, in, distro, writableProbeScript, downloads)
-	if err != nil || result.Code != 0 {
-		return Check{ID: id, Title: title, Status: StatusWarn, Detail: "not writable yet: " + downloads}
-	}
-	return Check{ID: id, Title: title, Status: StatusOK, Detail: downloads}
-}
-
-// ---------- scripting ----------
-
-const doctorArgv0 = "ez-am-doctor"
-
-// runScript runs a FIXED script through bash inside the distribution. Dynamic
-// values travel as separate arguments ($1, $2, …); they are never interpolated
-// into the script source.
-func runScript(ctx context.Context, in Inputs, distro, script string, args ...string) (platform.CommandResult, error) {
-	argv := []string{"-d", distro, "--exec", "bash", "-lc", script, doctorArgv0}
-	argv = append(argv, args...)
-	return in.Runner.Run(ctx, platform.CommandRequest{Name: "wsl.exe", Args: argv})
-}
-
-const legacyProbeScript = `if [ -f "$HOME/amd/login.sh" ]; then printf '%s' "$HOME/amd"; else exit 1; fi`
-
-const runtimeProbeScript = `base="$1"
-missing=""
-for name in dl.sh login.sh compose.yaml; do
-  if [ ! -f "$base/$name" ]; then missing="$missing$name,"; fi
-done
-printf 'missing=%s' "${missing%,}"
-if [ -n "$missing" ]; then exit 1; fi
-exit 0`
-
-const configProbeScript = `base="$1"
-if [ -s "$base/.env" ] && [ -s "$base/config/config.yaml" ]; then exit 0; fi
-exit 1`
-
-const writableProbeScript = `target="$1"
-if [ -d "$target" ] && [ -w "$target" ]; then exit 0; fi
-exit 1`
 
 // ---------- rendering ----------
 

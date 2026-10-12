@@ -3,30 +3,143 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"ez-am/internal/platform"
 )
 
-const probePayload = "\x1euid=1000\x1euser=alice\x1ehome=/home/alice\x1earchitecture=x86_64" +
-	"\x1eos_id=ubuntu\x1eos_id_like=debian\x1eos_version_id=24.04"
+// environment describes what a fake distribution reports back.
+type environment struct {
+	distros string
+
+	uid       string
+	user      string
+	home      string
+	arch      string
+	osID      string
+	osIDLike  string
+	osVersion string
+
+	base        string
+	legacy      bool
+	missing     string
+	credentials bool
+
+	docker      string
+	dockerError string
+	buildx      string
+	images      []string
+
+	wrapperOK     bool
+	wrapperDetail string
+
+	downloadsOK bool
+}
+
+func greenEnvironment() environment {
+	return environment{
+		distros:     "Ubuntu\r\n",
+		uid:         "1000",
+		user:        "alice",
+		home:        "/home/alice",
+		arch:        "x86_64",
+		osID:        "ubuntu",
+		osIDLike:    "debian",
+		osVersion:   "24.04",
+		base:        "/home/alice/amd",
+		legacy:      true,
+		credentials: true,
+		docker:      "29.1.3",
+		buildx:      "github.com/docker/buildx v0.38.0",
+		images:      []string{"ghcr.io/zhaarey/apple-music-downloader:<none>", "local/wrapper:latest"},
+		wrapperOK:   true,
+		downloadsOK: true,
+	}
+}
+
+// payload renders the record stream the real probe emits.
+func (env environment) payload() string {
+	var builder strings.Builder
+	field := func(key, value string) {
+		fmt.Fprintf(&builder, "\x1e%s=%s", key, value)
+	}
+	field("uid", env.uid)
+	field("user", env.user)
+	field("home", env.home)
+	field("architecture", env.arch)
+	field("os_id", env.osID)
+	field("os_id_like", env.osIDLike)
+	field("os_version_id", env.osVersion)
+	field("base", env.base)
+	if env.legacy {
+		field("legacy", "1")
+	} else {
+		field("legacy", "0")
+	}
+	field("missing", env.missing)
+	if env.credentials {
+		field("credentials", "1")
+	} else {
+		field("credentials", "0")
+	}
+	field("docker", env.docker)
+	if env.dockerError != "" {
+		field("docker_error", env.dockerError)
+	}
+	field("buildx", env.buildx)
+	for _, image := range env.images {
+		field("image", image)
+	}
+	if env.wrapperOK {
+		field("wrapper", "1")
+	} else {
+		field("wrapper", "0")
+		if env.wrapperDetail != "" {
+			field("wrapper_detail", env.wrapperDetail)
+		}
+	}
+	if env.downloadsOK {
+		field("downloads", "1")
+	} else {
+		field("downloads", "0")
+	}
+	return builder.String()
+}
 
 type fakeRunner struct {
+	mutex   sync.Mutex
 	calls   []platform.CommandRequest
 	handler func(platform.CommandRequest) (platform.CommandResult, error)
 }
 
 func (f *fakeRunner) Run(_ context.Context, request platform.CommandRequest) (platform.CommandResult, error) {
+	f.mutex.Lock()
 	f.calls = append(f.calls, request)
+	f.mutex.Unlock()
 	if f.handler == nil {
 		return platform.CommandResult{}, nil
 	}
 	return f.handler(request)
 }
 
-// classify names the logical operation behind a request so a test can script
-// answers without depending on exact argv shapes.
+func (f *fakeRunner) recorded() []platform.CommandRequest {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	out := make([]platform.CommandRequest, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+var errNotStarted = &startError{}
+
+type startError struct{}
+
+func (*startError) Error() string { return "executable file not found in %PATH%" }
+
+// classify names the logical operation behind a request.
 func classify(request platform.CommandRequest) string {
 	if request.Name != "wsl.exe" {
 		return "other"
@@ -37,125 +150,24 @@ func classify(request platform.CommandRequest) string {
 		return "wsl-status"
 	case len(request.Args) == 2 && request.Args[0] == "-l":
 		return "wsl-list"
-	case strings.Contains(joined, "docker info"):
-		return "docker-info"
-	case strings.Contains(joined, "buildx"):
-		return "buildx"
-	case strings.Contains(joined, "docker images"):
-		return "images"
-	}
-	if len(request.Args) >= 6 && request.Args[2] == "--" && request.Args[3] == "sh" && request.Args[4] == "-c" {
-		if strings.Contains(request.Args[5], "os-release") {
-			return "probe-distribution"
-		}
-		return "other"
-	}
-	if len(request.Args) >= 6 && request.Args[4] == "-lc" {
-		script := request.Args[5]
-		switch {
-		case strings.Contains(script, "os-release"):
-			return "probe-distribution"
-		case strings.Contains(script, "$HOME/amd/login.sh"):
-			return "probe-legacy"
-		case strings.Contains(script, "missing="):
-			return "probe-runtime"
-		case strings.Contains(script, "config.yaml"):
-			return "probe-config"
-		case strings.Contains(script, "-w"):
-			return "probe-downloads"
-		}
-	}
-	if len(request.Args) >= 6 && strings.HasSuffix(request.Args[4], "/login.sh") && request.Args[5] == "status" {
-		return "login-status"
+	case strings.Contains(joined, "ez-am-probe-facts"):
+		return "probe-facts"
 	}
 	return "other"
-}
-
-type environment struct {
-	status      string
-	distros     string
-	probeFails  bool
-	docker      bool
-	buildx      bool
-	legacyBase  string
-	runtimeOK   bool
-	configOK    bool
-	imagesOK    bool
-	wrapperLogs string
-	wrapperOK   bool
-	downloadsOK bool
 }
 
 func newRunner(env environment) *fakeRunner {
 	return &fakeRunner{handler: func(request platform.CommandRequest) (platform.CommandResult, error) {
 		switch classify(request) {
 		case "wsl-status":
-			return platform.CommandResult{Stdout: []byte(env.status)}, nil
+			return platform.CommandResult{Stdout: []byte("Default Distribution: " + strings.TrimSpace(env.distros))}, nil
 		case "wsl-list":
 			return platform.CommandResult{Stdout: []byte(env.distros)}, nil
-		case "probe-distribution":
-			if env.probeFails {
-				return platform.CommandResult{Code: 65}, nil
-			}
-			return platform.CommandResult{Stdout: []byte(probePayload)}, nil
-		case "docker-info":
-			if !env.docker {
-				return platform.CommandResult{Code: 1, Stderr: []byte("Cannot connect to the Docker daemon")}, nil
-			}
-			return platform.CommandResult{Stdout: []byte("29.1.3\n")}, nil
-		case "buildx":
-			if !env.buildx {
-				return platform.CommandResult{Code: 1}, nil
-			}
-			return platform.CommandResult{Stdout: []byte("github.com/docker/buildx v0.38.0\n")}, nil
-		case "probe-legacy":
-			if env.legacyBase != "" {
-				return platform.CommandResult{Stdout: []byte(env.legacyBase)}, nil
-			}
-			return platform.CommandResult{Code: 1}, nil
-		case "probe-runtime":
-			if env.runtimeOK {
-				return platform.CommandResult{Stdout: []byte("missing=")}, nil
-			}
-			return platform.CommandResult{Code: 1, Stdout: []byte("missing=setup.sh,login.sh")}, nil
-		case "probe-config":
-			if env.configOK {
-				return platform.CommandResult{}, nil
-			}
-			return platform.CommandResult{Code: 1}, nil
-		case "probe-downloads":
-			if env.downloadsOK {
-				return platform.CommandResult{}, nil
-			}
-			return platform.CommandResult{Code: 1}, nil
-		case "images":
-			if env.imagesOK {
-				return platform.CommandResult{Stdout: []byte("ghcr.io/zhaarey/apple-music-downloader:<none>\nlocal/wrapper:latest\n")}, nil
-			}
-			return platform.CommandResult{Stdout: []byte("redis:7-alpine\n")}, nil
-		case "login-status":
-			if env.wrapperOK {
-				return platform.CommandResult{Stdout: []byte("[+] wrapper is running\n")}, nil
-			}
-			return platform.CommandResult{Code: 1, Stderr: []byte(env.wrapperLogs)}, nil
+		case "probe-facts":
+			return platform.CommandResult{Stdout: []byte(env.payload())}, nil
 		}
 		return platform.CommandResult{}, nil
 	}}
-}
-
-func greenEnvironment() environment {
-	return environment{
-		status:      "Default Distribution: Ubuntu\r\n",
-		distros:     "Ubuntu\r\n",
-		docker:      true,
-		buildx:      true,
-		legacyBase:  "/home/alice/amd",
-		runtimeOK:   true,
-		configOK:    true,
-		imagesOK:    true,
-		wrapperOK:   true,
-		downloadsOK: true,
-	}
 }
 
 func TestRunWithoutWSLReportsUnsupportedPlatform(t *testing.T) {
@@ -170,12 +182,6 @@ func TestRunWithoutWSLReportsUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("text should explain the missing wsl.exe: %s", report.Text())
 	}
 }
-
-var errNotStarted = &startError{}
-
-type startError struct{}
-
-func (*startError) Error() string { return "executable file not found in %PATH%" }
 
 func TestRunWithoutDistributionsNeedsDistro(t *testing.T) {
 	env := greenEnvironment()
@@ -193,8 +199,7 @@ func TestRunWithTwoDistributionsNeedsSelection(t *testing.T) {
 	if report.Code != NeedsSelection {
 		t.Fatalf("expected NEEDS_SELECTION, got %s", report.Code)
 	}
-	actions := report.Actions()
-	if len(actions) != 1 || actions[0] != ActionChooseDistro {
+	if actions := report.Actions(); len(actions) != 1 || actions[0] != ActionChooseDistro {
 		t.Fatalf("expected the distro choice action, got %v", actions)
 	}
 	if !strings.Contains(report.Text(), "Ubuntu, Debian") {
@@ -204,10 +209,11 @@ func TestRunWithTwoDistributionsNeedsSelection(t *testing.T) {
 
 func TestRunWithoutDockerIsDockerUnavailable(t *testing.T) {
 	env := greenEnvironment()
-	env.docker = false
+	env.docker = ""
+	env.dockerError = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
 	report := Run(context.Background(), Inputs{Runner: newRunner(env)})
 	if report.Code != DockerUnavailable {
-		t.Fatalf("expected DOCKER_UNAVAILABLE, got %s", report.Code)
+		t.Fatalf("expected DOCKER_UNAVAILABLE, got %s (%v)", report.Code, report.Checks)
 	}
 	if actions := report.Actions(); len(actions) != 1 || actions[0] != ActionStartDocker {
 		t.Fatalf("expected the start-docker action, got %v", actions)
@@ -216,7 +222,7 @@ func TestRunWithoutDockerIsDockerUnavailable(t *testing.T) {
 
 func TestRunWithoutRuntimeFilesNeedsRuntime(t *testing.T) {
 	env := greenEnvironment()
-	env.runtimeOK = false
+	env.missing = "dl.sh,login.sh"
 	report := Run(context.Background(), Inputs{Runner: newRunner(env)})
 	if report.Code != NeedsRuntime {
 		t.Fatalf("expected NEEDS_RUNTIME, got %s", report.Code)
@@ -231,7 +237,7 @@ func TestRunWithoutRuntimeFilesNeedsRuntime(t *testing.T) {
 
 func TestRunWithoutCredentialsNeedsDeploy(t *testing.T) {
 	env := greenEnvironment()
-	env.configOK = false
+	env.credentials = false
 	report := Run(context.Background(), Inputs{Runner: newRunner(env)})
 	if report.Code != NeedsDeploy {
 		t.Fatalf("expected NEEDS_DEPLOY, got %s", report.Code)
@@ -241,31 +247,74 @@ func TestRunWithoutCredentialsNeedsDeploy(t *testing.T) {
 	}
 }
 
+func TestRunWithMissingImagesOnlyWarns(t *testing.T) {
+	env := greenEnvironment()
+	env.images = []string{"redis:7-alpine"}
+	report := Run(context.Background(), Inputs{Runner: newRunner(env)})
+	if !report.Ready() {
+		t.Fatalf("missing images are a warning, not a failure: %s (%v)", report.Code, report.Checks)
+	}
+	for _, check := range report.Checks {
+		if check.ID != "images" {
+			continue
+		}
+		if check.Status != StatusWarn || !strings.Contains(check.Detail, "downloader") || !strings.Contains(check.Detail, "wrapper") {
+			t.Fatalf("unexpected images row: %+v", check)
+		}
+	}
+}
+
 func TestRunWithUnhealthyWrapperNeedsAuth(t *testing.T) {
 	env := greenEnvironment()
 	env.wrapperOK = false
-	env.wrapperLogs = "[!] Persisted wrapper session is missing or empty. Run: bash login.sh interactive\n"
+	env.wrapperDetail = "[!] Persisted wrapper session is missing or empty. Run: bash login.sh interactive"
 	report := Run(context.Background(), Inputs{Runner: newRunner(env)})
 	if report.Code != NeedsAuth {
 		t.Fatalf("expected NEEDS_AUTH, got %s", report.Code)
 	}
 	for _, check := range report.Checks {
-		if check.ID == "wrapper" {
-			if !strings.Contains(check.Detail, "Persisted wrapper session") {
-				t.Fatalf("wrapper detail should carry the actionable line, got %q", check.Detail)
-			}
-			if strings.Contains(check.Detail, "\n") {
-				t.Fatalf("wrapper detail must be a single line, got %q", check.Detail)
-			}
+		if check.ID != "wrapper" {
+			continue
 		}
+		if check.Action != ActionLogin {
+			t.Fatalf("the wrapper row must offer the login action: %+v", check)
+		}
+		if strings.Contains(check.Detail, "\n") || !strings.Contains(check.Detail, "Persisted wrapper session") {
+			t.Fatalf("unexpected wrapper detail %q", check.Detail)
+		}
+	}
+}
+
+func TestRunRejectsRootDefaultUserAndUnsupportedFamily(t *testing.T) {
+	rootEnv := greenEnvironment()
+	rootEnv.uid = "0"
+	rootEnv.user = "root"
+	rootEnv.home = "/root"
+	rootReport := Run(context.Background(), Inputs{Runner: newRunner(rootEnv)})
+	if rootReport.Ready() {
+		t.Fatal("a root default user must not be considered ready")
+	}
+	if !strings.Contains(rootReport.Text(), "root") {
+		t.Fatalf("text should explain the root user: %s", rootReport.Text())
+	}
+
+	familyEnv := greenEnvironment()
+	familyEnv.osID = "fedora"
+	familyEnv.osIDLike = ""
+	familyReport := Run(context.Background(), Inputs{Runner: newRunner(familyEnv)})
+	if familyReport.Ready() {
+		t.Fatal("an unsupported family must not be considered ready")
+	}
+	if !strings.Contains(familyReport.Text(), "unsupported distribution family") {
+		t.Fatalf("text should explain the family: %s", familyReport.Text())
 	}
 }
 
 func TestRunAllGreenIsReady(t *testing.T) {
 	runner := newRunner(greenEnvironment())
 	report := Run(context.Background(), Inputs{Runner: runner})
-	for _, call := range runner.calls {
-		t.Logf("call %-20s %v", classify(call), call.Args)
+	for _, call := range runner.recorded() {
+		t.Logf("call %-12s %v", classify(call), call.Args)
 	}
 	if !report.Ready() {
 		t.Fatalf("expected READY, got %s (%v)", report.Code, report.Checks)
@@ -277,7 +326,7 @@ func TestRunAllGreenIsReady(t *testing.T) {
 		t.Fatalf("expected the legacy base, got %q", report.Base)
 	}
 	if len(report.Checks) != 9 {
-		t.Fatalf("expected 9 checks, got %d", len(report.Checks))
+		t.Fatalf("expected 9 checks, got %d: %v", len(report.Checks), report.Checks)
 	}
 
 	text := report.Text()
@@ -312,49 +361,62 @@ func TestRunAllGreenIsReady(t *testing.T) {
 	}
 }
 
-func TestProbeKeepsDistributionAndBaseAsSeparateArguments(t *testing.T) {
+// The point of the consolidated probe: a fixed, small number of wsl.exe
+// invocations no matter how many facts the report needs.
+func TestDoctorUsesAtMostThreeWSLInvocations(t *testing.T) {
 	runner := newRunner(greenEnvironment())
 	Run(context.Background(), Inputs{Runner: runner})
 
-	var wrapperCalls, runtimeCalls int
-	for _, call := range runner.calls {
-		switch classify(call) {
-		case "login-status":
-			wrapperCalls++
-			if call.Args[0] != "-d" || call.Args[1] != "Ubuntu" {
-				t.Fatalf("distribution must be its own argument: %v", call.Args)
-			}
-			last := call.Args[len(call.Args)-1]
-			if last != "status" {
-				t.Fatalf("unexpected trailing argument: %v", call.Args)
-			}
-			for _, arg := range call.Args {
-				if strings.Contains(arg, "$HOME") {
-					t.Fatalf("the runtime base must not be resolved through the shell: %v", call.Args)
-				}
-			}
-		case "probe-runtime":
-			runtimeCalls++
-			if len(call.Args) < 8 {
-				t.Fatalf("the base must be passed as $1: %v", call.Args)
-			}
-			if call.Args[7] != "/home/alice/amd" {
-				t.Fatalf("unexpected base argument: %v", call.Args)
-			}
-			if strings.Contains(call.Args[5], "/home/alice") {
-				t.Fatalf("the base leaked into the script source: %v", call.Args[5])
-			}
+	counts := map[string]int{}
+	for _, call := range runner.recorded() {
+		counts[classify(call)]++
+	}
+	if counts["probe-facts"] != 1 {
+		t.Fatalf("expected exactly one consolidated probe, got %v", counts)
+	}
+	if counts["wsl-status"] != 1 || counts["wsl-list"] != 1 {
+		t.Fatalf("expected one status and one inventory call, got %v", counts)
+	}
+	if total := len(runner.recorded()); total > 3 {
+		t.Fatalf("expected at most 3 wsl.exe invocations, got %d: %v", total, counts)
+	}
+}
+
+func TestProbeKeepsDynamicValuesOutOfTheScript(t *testing.T) {
+	runner := newRunner(greenEnvironment())
+	Run(context.Background(), Inputs{Runner: runner, Base: "/opt/ez-am/"})
+
+	var probe platform.CommandRequest
+	for _, call := range runner.recorded() {
+		if classify(call) == "probe-facts" {
+			probe = call
 		}
 	}
-	if wrapperCalls != 1 || runtimeCalls != 1 {
-		t.Fatalf("expected one wrapper probe and one runtime probe, got %d/%d", wrapperCalls, runtimeCalls)
+	if len(probe.Args) == 0 {
+		t.Fatal("the consolidated probe was never invoked")
+	}
+	if probe.Args[0] != "-d" || probe.Args[1] != "Ubuntu" {
+		t.Fatalf("the distribution must be its own argument: %v", probe.Args)
+	}
+	script := probe.Args[5]
+	if !strings.Contains(script, "ez-am-probe-facts") {
+		t.Fatalf("unexpected probe script: %q", script)
+	}
+	for _, dynamic := range []string{"Ubuntu", "/opt/ez-am", "alice"} {
+		if strings.Contains(script, dynamic) {
+			t.Fatalf("dynamic value %q leaked into the script source", dynamic)
+		}
+	}
+	if last := probe.Args[len(probe.Args)-1]; last != "/opt/ez-am" {
+		t.Fatalf("the explicit base must travel as its own argument, got %q in %v", last, probe.Args)
 	}
 }
 
 func TestExplicitDistributionAndBaseAreHonoured(t *testing.T) {
 	env := greenEnvironment()
 	env.distros = "Ubuntu\r\nDebian\r\n"
-	env.legacyBase = ""
+	env.base = "/opt/ez-am"
+	env.legacy = false
 	report := Run(context.Background(), Inputs{Runner: newRunner(env), Distro: "Debian", Base: "/opt/ez-am/"})
 	if !report.Ready() {
 		t.Fatalf("expected READY with explicit inputs, got %s (%v)", report.Code, report.Checks)
@@ -364,5 +426,20 @@ func TestExplicitDistributionAndBaseAreHonoured(t *testing.T) {
 	}
 	if report.Base != "/opt/ez-am" {
 		t.Fatalf("expected the explicit base without a trailing slash, got %q", report.Base)
+	}
+}
+
+func TestParseFactsRejectsMalformedPayloads(t *testing.T) {
+	if _, err := parseFacts([]byte("no separator here")); err == nil {
+		t.Fatal("a payload without records must be rejected")
+	}
+	if _, err := parseFacts([]byte("\x1euid=1000\x1euser=alice")); err == nil {
+		t.Fatal("a payload with missing required fields must be rejected")
+	}
+	if _, err := parseFacts([]byte("\x1euid=x\x1euser=alice\x1ehome=/home/alice\x1eos_id=ubuntu\x1ebase=/home/alice/amd")); err == nil {
+		t.Fatal("a non-numeric uid must be rejected")
+	}
+	if _, err := parseFacts([]byte("\x1euid=1000\x1euser=alice\x1ehome=/home/alice\x1eos_id=ubuntu\x1ebase=/b\x1eunknown=1")); err == nil {
+		t.Fatal("an unknown field must be rejected")
 	}
 }
